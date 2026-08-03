@@ -42,7 +42,8 @@ export default function Lobby() {
   }
 
   const connectedCount = state.players.filter((p) => p.connected).length || state.players.length;
-  const canStart = state.players.length >= 2 && state.deckSize >= DECK_MIN_TO_START && state.warm === "READY";
+  const soloRightNow = state.solo && state.players.length < 2;
+  const canStart = state.players.length >= (state.solo ? 1 : 2) && state.deckSize >= DECK_MIN_TO_START && state.warm === "READY";
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-4 py-8">
@@ -70,7 +71,7 @@ export default function Lobby() {
 
         <p className="text-xs text-white/50">
           {state.genreMode === "SHARED"
-            ? "Everyone's picks combine into one shared list."
+            ? "Only movies that overlap with everyone's picks make the cut."
             : "Everyone builds their own deck from their own picks."}
         </p>
 
@@ -162,7 +163,7 @@ export default function Lobby() {
             onClick={handleStart}
             className="rounded-xl bg-white py-4 text-lg font-semibold text-ink-950 transition active:scale-[0.98] disabled:opacity-40"
           >
-            {starting ? "Starting…" : "Start voting"}
+            {starting ? "Starting…" : soloRightNow ? "Start Solo" : "Start Group"}
           </button>
         </div>
       ) : (

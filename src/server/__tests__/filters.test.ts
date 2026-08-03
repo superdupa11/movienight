@@ -23,20 +23,38 @@ describe("deck filters", () => {
     const brokenId = seedMovie(db, { categories: ["COMEDY"] });
     db.prepare("UPDATE movies SET has_poster = 0 WHERE id = ?").run(brokenId);
 
-    expect(countQualifying(db, DEFAULT_FILTERS, ["COMEDY"])).toBe(1);
+    expect(countQualifying(db, DEFAULT_FILTERS, [["COMEDY"]])).toBe(1);
   });
 
-  it("multi-select categories are OR-combined", () => {
+  it("categories within one group (one player's own multi-select) are OR-combined", () => {
     seedMovie(db, { categories: ["COMEDY"] });
     seedMovie(db, { categories: ["HORROR"] });
     seedMovie(db, { categories: ["DRAMA"] });
-    expect(countQualifying(db, DEFAULT_FILTERS, ["COMEDY", "HORROR"])).toBe(2);
+    expect(countQualifying(db, DEFAULT_FILTERS, [["COMEDY", "HORROR"]])).toBe(2);
   });
 
   it("a movie in multiple categories qualifies under either", () => {
     seedMovie(db, { categories: ["COMEDY", "ROMANCE"] });
-    expect(countQualifying(db, DEFAULT_FILTERS, ["COMEDY"])).toBe(1);
-    expect(countQualifying(db, DEFAULT_FILTERS, ["ROMANCE"])).toBe(1);
+    expect(countQualifying(db, DEFAULT_FILTERS, [["COMEDY"]])).toBe(1);
+    expect(countQualifying(db, DEFAULT_FILTERS, [["ROMANCE"]])).toBe(1);
+  });
+
+  it("different groups (different players) are AND-combined — only the overlap qualifies", () => {
+    const both = seedMovie(db, { categories: ["HORROR", "ROMANCE"] }); // e.g. a horror rom-com — satisfies both groups
+    seedMovie(db, { categories: ["HORROR"] }); // satisfies group 1 only — group 2 (Romance/Action) fails
+    seedMovie(db, { categories: ["ROMANCE"] }); // satisfies group 2 only — group 1 (Horror/Comedy) fails
+    const both2 = seedMovie(db, { categories: ["COMEDY", "ACTION"] }); // COMEDY hits group 1, ACTION hits group 2 — also a legit overlap member
+
+    const ids = getQualifyingMovieIds(db, DEFAULT_FILTERS, [["HORROR", "COMEDY"], ["ROMANCE", "ACTION"]]);
+    // Group 1 (Horror OR Comedy) AND group 2 (Romance OR Action) — a movie can satisfy
+    // both groups via different tags, it doesn't need one tag common to both.
+    expect(new Set(ids)).toEqual(new Set([both, both2]));
+  });
+
+  it("a player with no picks yet contributes no group and doesn't shrink the intersection", () => {
+    seedMovie(db, { categories: ["HORROR"] });
+    seedMovie(db, { categories: ["ROMANCE"] });
+    expect(countQualifying(db, DEFAULT_FILTERS, [["HORROR"], []])).toBe(1);
   });
 
   it("directors: OR within the facet", () => {
@@ -59,7 +77,7 @@ describe("deck filters", () => {
     setMoviePeople(db, m1, "DIRECTOR", [{ personId: fincher }]);
     setMoviePeople(db, m2, "DIRECTOR", [{ personId: fincher }]);
 
-    const ids = getQualifyingMovieIds(db, { ...DEFAULT_FILTERS, directors: [fincher] }, ["THRILLER"]);
+    const ids = getQualifyingMovieIds(db, { ...DEFAULT_FILTERS, directors: [fincher] }, [["THRILLER"]]);
     expect(ids).toEqual([m1]);
   });
 
@@ -91,14 +109,26 @@ describe("deck filters", () => {
   });
 
   it("canonicalizeFilters is stable regardless of array order", () => {
-    const a = canonicalizeFilters({ ...DEFAULT_FILTERS, directors: [3, 1, 2] }, ["HORROR", "COMEDY"]);
-    const b = canonicalizeFilters({ ...DEFAULT_FILTERS, directors: [1, 2, 3] }, ["COMEDY", "HORROR"]);
+    const a = canonicalizeFilters({ ...DEFAULT_FILTERS, directors: [3, 1, 2] }, [["HORROR", "COMEDY"]]);
+    const b = canonicalizeFilters({ ...DEFAULT_FILTERS, directors: [1, 2, 3] }, [["COMEDY", "HORROR"]]);
     expect(a).toBe(b);
   });
 
   it("canonicalizeFilters differs when categories differ", () => {
-    const a = canonicalizeFilters(DEFAULT_FILTERS, ["COMEDY"]);
-    const b = canonicalizeFilters(DEFAULT_FILTERS, ["HORROR"]);
+    const a = canonicalizeFilters(DEFAULT_FILTERS, [["COMEDY"]]);
+    const b = canonicalizeFilters(DEFAULT_FILTERS, [["HORROR"]]);
     expect(a).not.toBe(b);
+  });
+
+  it("canonicalizeFilters is stable regardless of which group order players picked in", () => {
+    const a = canonicalizeFilters(DEFAULT_FILTERS, [["HORROR"], ["ROMANCE", "ACTION"]]);
+    const b = canonicalizeFilters(DEFAULT_FILTERS, [["ACTION", "ROMANCE"], ["HORROR"]]);
+    expect(a).toBe(b);
+  });
+
+  it("canonicalizeFilters ignores empty groups (a player who hasn't picked yet)", () => {
+    const a = canonicalizeFilters(DEFAULT_FILTERS, [["HORROR"]]);
+    const b = canonicalizeFilters(DEFAULT_FILTERS, [["HORROR"], []]);
+    expect(a).toBe(b);
   });
 });

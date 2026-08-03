@@ -5,16 +5,15 @@ export default function Landing() {
   const { createRoom, joinRoom } = useRoom();
   const params = new URLSearchParams(location.search);
   const [mode, setMode] = useState<"create" | "join">(params.get("code") ? "join" : "create");
-  const [name, setName] = useState("");
+  const [solo, setSolo] = useState(false);
   const [code, setCode] = useState(params.get("code") ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
   async function submit() {
-    if (!name.trim()) return setError("Enter your name");
     setBusy(true);
     setError(undefined);
-    const res = mode === "create" ? await createRoom(name.trim()) : await joinRoom(code.trim(), name.trim());
+    const res = mode === "create" ? await createRoom(solo) : await joinRoom(code.trim());
     setBusy(false);
     if (!res.ok) setError(res.message);
   }
@@ -42,13 +41,17 @@ export default function Landing() {
       </div>
 
       <div className="flex w-full max-w-xs flex-col gap-3">
-        <input
-          className="rounded-xl bg-ink-800 px-4 py-3 text-center text-lg outline-none ring-1 ring-white/10 focus:ring-white/40"
-          placeholder="Your name"
-          value={name}
-          maxLength={40}
-          onChange={(e) => setName(e.target.value)}
-        />
+        {mode === "create" && (
+          <label className="flex items-center justify-between rounded-xl bg-ink-800 px-4 py-3 text-sm">
+            Just me tonight — solo picks
+            <input
+              type="checkbox"
+              checked={solo}
+              onChange={(e) => setSolo(e.target.checked)}
+              className="h-5 w-5"
+            />
+          </label>
+        )}
         {mode === "join" && (
           <input
             className="rounded-xl bg-ink-800 px-4 py-3 text-center text-2xl font-mono uppercase tracking-[0.3em] outline-none ring-1 ring-white/10 focus:ring-white/40"

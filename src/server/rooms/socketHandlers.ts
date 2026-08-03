@@ -35,11 +35,10 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
   }
 
   io.on("connection", (socket: AppSocket) => {
-    socket.on("room:create", ({ name }, cb) => {
-      if (typeof name !== "string" || !name.trim()) return cb({ error: "ERR_BAD_REQUEST" });
+    socket.on("room:create", (payload, cb) => {
       const userId = randomUUID();
-      const room = roomManager.create(userId);
-      room.join(userId, name.trim().slice(0, 40), false);
+      const room = roomManager.create(userId, !!payload?.solo);
+      room.join(userId, false);
       const token = signSessionToken({ roomCode: room.code, userId });
       cb({ code: room.code, token });
     });
@@ -51,9 +50,8 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       const tokenPayload = payload.token ? verifySessionToken(payload.token) : undefined;
       const viaToken = !!tokenPayload && tokenPayload.roomCode === room.code;
       const userId = viaToken ? tokenPayload!.userId : randomUUID();
-      const name = (payload.name || "Player").trim().slice(0, 40) || "Player";
 
-      const result = room.join(userId, name, viaToken);
+      const result = room.join(userId, viaToken);
       if (!result.ok) return cb({ error: result.error, message: result.message });
 
       socket.data.userId = userId;
@@ -64,8 +62,7 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       const token = viaToken ? (payload.token as string) : signSessionToken({ roomCode: room.code, userId });
       cb(room.buildStateDTO(userId, token));
 
-      const player = room.players.get(userId);
-      socket.to(room.code).emit("player:joined", { id: userId, name: player?.name ?? name });
+      socket.to(room.code).emit("player:joined", { id: userId, name: room.displayName(userId) });
     });
 
     socket.on("room:leave", () => {

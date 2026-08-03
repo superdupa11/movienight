@@ -48,13 +48,13 @@ async function verifyPool(ids: string[], db: Database.Database, onProgress?: (do
 export async function prewarmDeck(
   db: Database.Database,
   filters: DeckFilters,
-  categories: CategoryId[],
+  categoryGroups: CategoryId[][],
   onProgress?: (done: number, total: number) => void,
 ): Promise<PrewarmResult> {
   const libraryVersion = getLibraryVersion(db);
-  const deckHash = computeDeckHash(filters, categories, libraryVersion);
+  const deckHash = computeDeckHash(filters, categoryGroups, libraryVersion);
   const categoryOptions = getCategoryOptions(db, filters);
-  const qualifyingCount = countQualifying(db, filters, categories);
+  const qualifyingCount = countQualifying(db, filters, categoryGroups);
 
   const cached = getCachedDeck(deckHash);
   if (cached) {
@@ -62,7 +62,7 @@ export async function prewarmDeck(
     return { deckHash, qualifyingCount, deckSize: cached.movieIds.length, categories: categoryOptions };
   }
 
-  const candidateIds = getQualifyingMovieIds(db, filters, categories);
+  const candidateIds = getQualifyingMovieIds(db, filters, categoryGroups);
   const verifiedIds = await verifyPool(candidateIds, db, onProgress);
   setCachedDeck(deckHash, { movieIds: verifiedIds, warmedAt: Date.now(), assetsReady: true });
 

@@ -10,17 +10,25 @@ import {
 
 type WhereClause = { sql: string; params: (string | number)[] };
 
-/** Builds the shared WHERE clause. `categories` is OR-combined (multi-select); empty = any genre. */
-function buildWhereClause(filters: DeckFilters, categories: CategoryId[]): WhereClause {
+/**
+ * Builds the shared WHERE clause. `categoryGroups` is one array of picks per
+ * player: OR-combined *within* a group (one person's own multi-select), AND
+ * across groups (SHARED mode's cross-player overlap) — a movie must satisfy
+ * every non-empty group. Empty groups impose no constraint (a player who
+ * hasn't picked yet doesn't shrink the intersection); an empty group list
+ * matches any genre, same as before.
+ */
+function buildWhereClause(filters: DeckFilters, categoryGroups: CategoryId[][]): WhereClause {
   const clauses: string[] = [];
   const params: (string | number)[] = [];
 
-  if (categories.length > 0) {
-    const placeholders = categories.map(() => "?").join(",");
+  for (const group of categoryGroups) {
+    if (group.length === 0) continue;
+    const placeholders = group.map(() => "?").join(",");
     clauses.push(
       `EXISTS (SELECT 1 FROM movie_category mc WHERE mc.movie_id = movies.id AND mc.category_id IN (${placeholders}))`,
     );
-    params.push(...categories);
+    params.push(...group);
   }
 
   if (filters.directors && filters.directors.length > 0) {
@@ -64,8 +72,8 @@ function buildWhereClause(filters: DeckFilters, categories: CategoryId[]): Where
   return { sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
 }
 
-export function countQualifying(db: Database.Database, filters: DeckFilters, categories: CategoryId[]): number {
-  const { sql, params } = buildWhereClause(filters, categories);
+export function countQualifying(db: Database.Database, filters: DeckFilters, categoryGroups: CategoryId[][]): number {
+  const { sql, params } = buildWhereClause(filters, categoryGroups);
   const row = db.prepare(`SELECT COUNT(*) AS n FROM movies ${sql}`).get(...params) as { n: number };
   return row.n;
 }
@@ -75,8 +83,8 @@ export function countQualifying(db: Database.Database, filters: DeckFilters, cat
  * default-40 trim), capped at DECK_LIMIT_MAX only as a technical safety
  * ceiling against a pathological "every category" selection.
  */
-export function getQualifyingMovieIds(db: Database.Database, filters: DeckFilters, categories: CategoryId[]): string[] {
-  const { sql, params } = buildWhereClause(filters, categories);
+export function getQualifyingMovieIds(db: Database.Database, filters: DeckFilters, categoryGroups: CategoryId[][]): string[] {
+  const { sql, params } = buildWhereClause(filters, categoryGroups);
   const rows = db
     .prepare(`SELECT movies.id AS id FROM movies ${sql} ORDER BY movies.id LIMIT ?`)
     .all(...params, DECK_LIMIT_MAX) as { id: string }[];
@@ -87,18 +95,28 @@ export function getQualifyingMovieIds(db: Database.Database, filters: DeckFilter
  * Live per-category counts against the host-controlled filters only
  * (runtime/unwatched/people) — multi-select means there's no single "current
  * category" to exclude the way single-select did, so this is now a plain,
- * mode-independent computation reused for every viewer.
+ * mode-independent computation reused for every viewer. Unaffected by the
+ * cross-player intersection logic: each chip's count is just "how many movies
+ * are in this one category," regardless of what anyone has picked.
  */
 export function getCategoryOptions(db: Database.Database, filters: DeckFilters): CategoryOption[] {
   return CATEGORY_IDS.map((id) => {
-    const count = countQualifying(db, filters, [id]);
+    const count = countQualifying(db, filters, [[id]]);
     return { id, label: CATEGORY_LABELS[id], count };
   });
 }
 
-export function canonicalizeFilters(filters: DeckFilters, categories: CategoryId[]): string {
+/** Group order doesn't matter (which player contributed which group), so it's normalized away for cache-hash stability. */
+export function canonicalizeFilters(filters: DeckFilters, categoryGroups: CategoryId[][]): string {
+  const normalizedGroups = categoryGroups
+    .map((g) => [...new Set(g)].sort())
+    .filter((g) => g.length > 0)
+    .sort((a, b) => {
+      const [ja, jb] = [a.join(","), b.join(",")];
+      return ja < jb ? -1 : ja > jb ? 1 : 0;
+    });
   const normalized = {
-    categories: [...categories].sort(),
+    categoryGroups: normalizedGroups,
     directors: [...(filters.directors ?? [])].sort((a, b) => a - b),
     cast: [...(filters.cast ?? [])].sort((a, b) => a - b),
     maxRuntime: filters.maxRuntime ?? null,

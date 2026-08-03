@@ -26,6 +26,7 @@ type State = {
   you?: { id: string; token: string };
   myCategories: CategoryId[];
   hostId?: string;
+  solo: boolean;
   phase?: RoomPhase;
   players: Player[];
   filters: DeckFilters;
@@ -51,6 +52,7 @@ type State = {
 const initialState: State = {
   status: "idle",
   myCategories: [],
+  solo: false,
   players: [],
   filters: { ...DEFAULT_FILTERS },
   genreMode: "SHARED",
@@ -98,6 +100,7 @@ function reducer(state: State, action: Action): State {
         you: { id: action.dto.you.id, token: action.dto.you.token },
         myCategories: action.dto.you.categories,
         hostId: action.dto.hostId,
+        solo: action.dto.solo,
         phase: action.dto.phase,
         players: action.dto.players,
         filters: action.dto.filters,
@@ -167,8 +170,8 @@ function reducer(state: State, action: Action): State {
 
 type RoomApi = {
   state: State;
-  createRoom: (name: string) => Promise<{ ok: true } | { ok: false; message: string }>;
-  joinRoom: (code: string, name: string) => Promise<{ ok: true } | { ok: false; message: string }>;
+  createRoom: (solo?: boolean) => Promise<{ ok: true } | { ok: false; message: string }>;
+  joinRoom: (code: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   rejoin: () => void;
   leaveRoom: () => void;
   setFilters: (filters: DeckFilters) => void;
@@ -217,7 +220,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     const stored = loadSession();
     if (stored) {
       dispatch({ type: "CONNECTING" });
-      socket.emit("room:join", { code: stored.code, name: "", token: stored.token }, (res) => {
+      socket.emit("room:join", { code: stored.code, token: stored.token }, (res) => {
         if ("error" in res) {
           clearSession();
           dispatch({ type: "RESET_LOCAL" });
@@ -235,12 +238,12 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const createRoom = useCallback((name: string) => {
+  const createRoom = useCallback((solo?: boolean) => {
     dispatch({ type: "CONNECTING" });
     return new Promise<{ ok: true } | { ok: false; message: string }>((resolve) => {
-      socket.emit("room:create", { name }, (res) => {
+      socket.emit("room:create", { solo }, (res) => {
         if ("error" in res) return resolve({ ok: false, message: res.error });
-        socket.emit("room:join", { code: res.code, name, token: res.token }, (joinRes) => {
+        socket.emit("room:join", { code: res.code, token: res.token }, (joinRes) => {
           if ("error" in joinRes) return resolve({ ok: false, message: joinRes.message ?? joinRes.error });
           saveSession({ code: joinRes.code, token: joinRes.you.token });
           dispatch({ type: "JOINED", dto: joinRes });
@@ -250,10 +253,10 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const joinRoom = useCallback((code: string, name: string) => {
+  const joinRoom = useCallback((code: string) => {
     dispatch({ type: "CONNECTING" });
     return new Promise<{ ok: true } | { ok: false; message: string }>((resolve) => {
-      socket.emit("room:join", { code: code.toUpperCase(), name }, (res) => {
+      socket.emit("room:join", { code: code.toUpperCase() }, (res) => {
         if ("error" in res) return resolve({ ok: false, message: res.message ?? res.error });
         saveSession({ code: res.code, token: res.you.token });
         dispatch({ type: "JOINED", dto: res });
@@ -265,7 +268,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const rejoin = useCallback(() => {
     const stored = loadSession();
     if (!stored) return;
-    socket.emit("room:join", { code: stored.code, name: "", token: stored.token }, (res) => {
+    socket.emit("room:join", { code: stored.code, token: stored.token }, (res) => {
       if (!("error" in res)) dispatch({ type: "JOINED", dto: res });
     });
   }, []);

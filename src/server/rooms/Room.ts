@@ -52,7 +52,7 @@ export class Room {
 
   // SHARED mode: one canonical set of values for the whole room.
   private shared: WarmSnapshot = { warm: "COLD", warmProgress: { done: 0, total: 0 }, deckHash: "", qualifyingCount: 0, deckSize: 0 };
-  private sharedCategories: CategoryId[] = [];
+  private sharedCategoryGroups: CategoryId[][] = [];
   // PERSONAL mode: independently tracked per player.
   private personal = new Map<string, WarmSnapshot>();
   private personalCategories = new Map<string, CategoryId[]>();
@@ -62,12 +62,14 @@ export class Room {
   private filterDebounceTimer?: NodeJS.Timeout;
   private recomputeToken = 0;
   private progressThrottlers = new Map<string, Throttler>();
+  private nextGuestNumber = 1; // monotonic — never reused, even if an earlier guest leaves
 
   constructor(
     code: string,
     hostId: string,
     private readonly io: AppServer,
     private readonly db: Database.Database,
+    readonly solo: boolean = false,
   ) {
     this.code = code;
     this.hostId = hostId;
@@ -97,11 +99,20 @@ export class Room {
 
   // ---- membership ----------------------------------------------------
 
-  join(userId: string, name: string, viaToken: boolean): Result {
+  /** Derived, not stored, so a host handoff (reassignHost) updates it for free. */
+  displayName(userId: string): string {
+    const player = this.players.get(userId);
+    return player ? this.nameFor(player) : "Guest";
+  }
+
+  private nameFor(player: PlayerInternal): string {
+    return player.isHost ? "Host" : `Guest ${player.guestNumber}`;
+  }
+
+  join(userId: string, viaToken: boolean): Result {
     const existing = this.players.get(userId);
     if (existing) {
       existing.connected = true;
-      if (name) existing.name = name;
       if (existing.graceTimer) {
         clearTimeout(existing.graceTimer);
         existing.graceTimer = undefined;
@@ -115,11 +126,12 @@ export class Room {
     if (this.isLocked() && !viaToken) return err("ERR_ROOM_LOCKED");
 
     const becomingHost = this.players.size === 0;
+    const isHost = becomingHost || userId === this.hostId;
     const player: PlayerInternal = {
       id: userId,
-      name: name || "Player",
+      guestNumber: isHost ? undefined : this.nextGuestNumber++,
       connected: true,
-      isHost: becomingHost || userId === this.hostId,
+      isHost,
       votedMovieIds: new Set(),
     };
     if (becomingHost) this.hostId = userId;
@@ -141,6 +153,7 @@ export class Room {
   private removePlayer(userId: string, reason: "left" | "timeout") {
     const player = this.players.get(userId);
     if (!player) return;
+    const departedName = this.nameFor(player); // compute before deleting — displayName(userId) would 404 after
     if (player.graceTimer) clearTimeout(player.graceTimer);
     this.players.delete(userId);
     this.genrePicks.delete(userId);
@@ -160,7 +173,7 @@ export class Room {
     if (this.hostId === userId) this.reassignHost();
 
     if (this.phase === "VOTING") {
-      const matched = this.evaluateMatches(`Matched after ${player.name} ${reason === "left" ? "left" : "dropped"}`);
+      const matched = this.evaluateMatches(`Matched after ${departedName} ${reason === "left" ? "left" : "dropped"}`);
       if (!matched) this.checkExhaustion();
     }
   }
@@ -234,10 +247,9 @@ export class Room {
     this.io.to(this.code).emit("lobby:genreProgress", { picked, total: this.players.size });
   }
 
-  private unionOfAllPicks(): CategoryId[] {
-    const set = new Set<CategoryId>();
-    for (const picks of this.genrePicks.values()) for (const c of picks) set.add(c);
-    return [...set];
+  /** One OR-group per player who has picked something; empty picks contribute no group (see buildWhereClause). */
+  private activePickGroups(): CategoryId[][] {
+    return [...this.genrePicks.values()].filter((picks) => picks.length > 0);
   }
 
   scheduleFilterRecompute(immediate = false) {
@@ -266,17 +278,17 @@ export class Room {
   }
 
   private async recomputeShared(token: number) {
-    const categories = this.unionOfAllPicks();
+    const categoryGroups = this.activePickGroups();
     this.shared = { ...this.shared, warm: "WARMING" };
     this.io.to(this.code).emit("lobby:warming", { warm: "WARMING", done: 0, total: 0 });
 
-    const result = await prewarmDeck(this.db, this.filters, categories, (done, total) => {
+    const result = await prewarmDeck(this.db, this.filters, categoryGroups, (done, total) => {
       if (token !== this.recomputeToken) return;
       this.io.to(this.code).emit("lobby:warming", { warm: "WARMING", done, total });
     });
     if (token !== this.recomputeToken) return;
 
-    this.sharedCategories = categories;
+    this.sharedCategoryGroups = categoryGroups;
     this.shared = {
       warm: "READY",
       warmProgress: { done: result.deckSize, total: result.deckSize },
@@ -294,7 +306,8 @@ export class Room {
     this.personal.set(userId, { ...(this.personal.get(userId) ?? this.emptySnapshot()), warm: "WARMING" });
     this.emitToPlayer(userId, "lobby:warming", { warm: "WARMING", done: 0, total: 0 });
 
-    const result = await prewarmDeck(this.db, this.filters, categories, (done, total) => {
+    // PERSONAL decks aren't merged across players — a single group is just this player's own OR-set, unaffected by SHARED's cross-player intersection.
+    const result = await prewarmDeck(this.db, this.filters, [categories], (done, total) => {
       if (token !== this.recomputeToken) return;
       this.emitToPlayer(userId, "lobby:warming", { warm: "WARMING", done, total });
     });
@@ -320,8 +333,8 @@ export class Room {
     return this.genreMode === "SHARED" ? this.shared : (this.personal.get(userId) ?? this.emptySnapshot());
   }
 
-  private categoriesFor(userId: string): CategoryId[] {
-    return this.genreMode === "SHARED" ? this.sharedCategories : (this.personalCategories.get(userId) ?? []);
+  private categoriesFor(userId: string): CategoryId[][] {
+    return this.genreMode === "SHARED" ? this.sharedCategoryGroups : [this.personalCategories.get(userId) ?? []];
   }
 
   private blameMessage(qualifyingCount: number): string {
@@ -340,7 +353,7 @@ export class Room {
   async startSession(actorId: string): Promise<Result> {
     if (this.phase !== "LOBBY") return err("ERR_INVALID_PHASE");
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
-    if (this.players.size < 2) return err("ERR_BAD_REQUEST", "Need at least 2 players to start.");
+    if (!this.solo && this.players.size < 2) return err("ERR_BAD_REQUEST", "Need at least 2 players to start.");
 
     if (this.genreMode === "SHARED") {
       if (this.shared.qualifyingCount < DECK_MIN_TO_START) return err("ERR_DECK_TOO_SMALL", this.blameMessage(this.shared.qualifyingCount));
@@ -349,7 +362,7 @@ export class Room {
       for (const [id, player] of this.players) {
         const snap = this.personal.get(id) ?? this.emptySnapshot();
         if (snap.qualifyingCount < DECK_MIN_TO_START) {
-          return err("ERR_DECK_TOO_SMALL", `${player.name} only matches ${snap.qualifyingCount} movies — they need to pick more genres.`);
+          return err("ERR_DECK_TOO_SMALL", `${this.nameFor(player)} only matches ${snap.qualifyingCount} movies — they need to pick more genres.`);
         }
         if (snap.warm !== "READY") return err("ERR_DECK_COLD", "Still warming — try again in a moment.");
       }
@@ -604,7 +617,7 @@ export class Room {
   buildStateDTO(viewerId: string, viewerToken: string): RoomStateDTO {
     const players = [...this.players.values()].map((p) => ({
       id: p.id,
-      name: p.name,
+      name: this.nameFor(p),
       connected: p.connected,
       isHost: p.isHost,
       cursor: p.votedMovieIds.size,
@@ -631,6 +644,7 @@ export class Room {
       code: this.code,
       phase: this.phase,
       hostId: this.hostId,
+      solo: this.solo,
       you: { id: viewerId, token: viewerToken, categories: this.genrePicks.get(viewerId) ?? [] },
       players,
       filters: this.filters,

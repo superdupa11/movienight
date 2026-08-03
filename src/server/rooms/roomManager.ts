@@ -22,10 +22,10 @@ export class RoomManager {
     return this.rooms.get(code.toUpperCase());
   }
 
-  create(hostId: string): Room {
+  create(hostId: string, solo = false): Room {
     let code = generateRoomCode();
     while (this.rooms.has(code)) code = generateRoomCode();
-    const room = new Room(code, hostId, this.io, this.db);
+    const room = new Room(code, hostId, this.io, this.db, solo);
     this.rooms.set(code, room);
     return room;
   }

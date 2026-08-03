@@ -52,9 +52,12 @@ export const CATEGORY_LABELS: Record<CategoryId, string> = {
 export type RoomPhase = "LOBBY" | "BUILDING" | "VOTING" | "MATCHED" | "RUNOFF" | "RESOLVED";
 
 /**
- * SHARED: every connected player's genre picks merge (OR/union) into one
- * shared qualifying movie set; each player still gets their own shuffled
- * order of that same set.
+ * SHARED: every connected player's genre picks combine into one shared
+ * qualifying movie set, but *across* players it's an intersection (overlap),
+ * not a union — a movie must satisfy every player's own picks. Within one
+ * player's own multi-select it's still OR (picking Comedy+Horror means
+ * "either" for that person); each player still gets their own shuffled order
+ * of that same overlapping set.
  * PERSONAL: each player's deck is filtered by ONLY their own picks —
  * decks can differ in content, not just order. Host-controlled.
  */
@@ -131,6 +134,7 @@ export type RoomStateDTO = {
   code: string;
   phase: RoomPhase;
   hostId: string;
+  solo: boolean;
   you: { id: string; token: string; categories: CategoryId[] };
   players: Player[];
   filters: DeckFilters;
@@ -163,8 +167,8 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
 // ---- Client -> Server events (PROTOCOL §4) --------------------------------
 
 export type ClientToServerEvents = {
-  "room:create": (payload: { name: string }, cb: (res: { code: string; token: string } | { error: ErrorCode }) => void) => void;
-  "room:join": (payload: { code: string; name: string; token?: string }, cb: (res: RoomStateDTO | { error: ErrorCode; message?: string }) => void) => void;
+  "room:create": (payload: { solo?: boolean }, cb: (res: { code: string; token: string } | { error: ErrorCode }) => void) => void;
+  "room:join": (payload: { code: string; token?: string }, cb: (res: RoomStateDTO | { error: ErrorCode; message?: string }) => void) => void;
   "room:leave": (payload: Record<string, never>) => void;
   "lobby:filters": (payload: DeckFilters) => void;
   // Additions beyond the literal §4 table — genre picking moved from a
