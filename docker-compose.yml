@@ -1,0 +1,30 @@
+services:
+  movienight:
+    image: movienight:latest
+    container_name: movienight
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Plex — use the LAN IP, not plex.tv. Container-to-container by name
+      # only works if Plex is on the same user-defined bridge network.
+      PLEX_URL: "http://192.168.1.10:32400"
+      PLEX_TOKEN: "${PLEX_TOKEN}"
+      PLEX_LIBRARY_SECTIONS: ""      # blank = auto-detect all movie sections
+
+      # App
+      PORT: "8080"
+      PUBLIC_URL: "https://movie.walztech.net"   # used to build the join QR
+      DB_PATH: "/data/movienight.db"
+      ART_CACHE_DIR: "/data/art"
+      INGEST_CRON: "0 4 * * *"
+      SESSION_SECRET: "${SESSION_SECRET}"
+      TZ: "America/Chicago"
+    volumes:
+      - /mnt/user/appdata/movienight:/data
+    networks:
+      - proxynet
+
+networks:
+  proxynet:
+    external: true
