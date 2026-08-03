@@ -16,7 +16,7 @@ import { clearSession, loadSession, saveSession } from "./sessionStorage";
 
 type Status = "idle" | "connecting" | "in-room" | "kicked-out";
 
-type ResultInfo = { movie: Movie; via: "match" | "runoff"; note?: string; votes?: number; plexUrl: string };
+type ResultInfo = { movie: Movie; via: "match" | "runoff"; note?: string; votes?: number; idx?: number; plexUrl: string };
 
 type State = {
   status: Status;
@@ -68,7 +68,7 @@ type Action =
   | { type: "DECK_MANIFEST"; deckHash: string; assetUrls: string[] }
   | { type: "DECK_DEALT"; movies: Movie[] }
   | { type: "PROGRESS"; id: string; cursor: number; total: number }
-  | { type: "MATCH_FOUND"; movie: Movie; note?: string; plexUrl: string }
+  | { type: "MATCH_FOUND"; movie: Movie; idx: number; note?: string; plexUrl: string }
   | { type: "RUNOFF_START"; candidates: { movie: Movie; yesCount: number }[] }
   | { type: "RUNOFF_TALLY"; picksIn: number; total: number }
   | { type: "RUNOFF_RESULT"; movie: Movie; votes: number; plexUrl: string }
@@ -128,7 +128,7 @@ function reducer(state: State, action: Action): State {
     case "PROGRESS":
       return { ...state, progress: { ...state.progress, [action.id]: { cursor: action.cursor, total: action.total } } };
     case "MATCH_FOUND":
-      return { ...state, phase: "MATCHED", result: { movie: action.movie, via: "match", note: action.note, plexUrl: action.plexUrl } };
+      return { ...state, phase: "MATCHED", result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl } };
     case "RUNOFF_START":
       return { ...state, phase: "RUNOFF", runoffCandidates: action.candidates, runoffTally: { picksIn: 0, total: state.players.length } };
     case "RUNOFF_TALLY":
@@ -184,7 +184,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("deck:manifest", (p) => dispatch({ type: "DECK_MANIFEST", deckHash: p.deckHash, assetUrls: p.assetUrls }));
     socket.on("deck:dealt", (p) => dispatch({ type: "DECK_DEALT", movies: p.movies }));
     socket.on("progress:update", (p) => dispatch({ type: "PROGRESS", ...p }));
-    socket.on("match:found", (p) => dispatch({ type: "MATCH_FOUND", movie: p.movie, note: p.note, plexUrl: p.plexUrl }));
+    socket.on("match:found", (p) => dispatch({ type: "MATCH_FOUND", movie: p.movie, idx: p.idx, note: p.note, plexUrl: p.plexUrl }));
     socket.on("runoff:start", (p) => dispatch({ type: "RUNOFF_START", candidates: p.candidates }));
     socket.on("runoff:tally", (p) => dispatch({ type: "RUNOFF_TALLY", ...p }));
     socket.on("runoff:result", (p) => dispatch({ type: "RUNOFF_RESULT", ...p }));

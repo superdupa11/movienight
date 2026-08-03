@@ -5,11 +5,18 @@ export default {
     extend: {
       colors: {
         ink: {
-          950: "#0a0a0f",
-          900: "#121218",
-          800: "#1b1b24",
-          700: "#26262f",
+          950: "#08080b",
+          900: "#101014",
+          800: "#15151b",
+          700: "#1b1b24",
         },
+        yes: "#34c77b",
+        no: "#e2483f",
+      },
+      fontFamily: {
+        display: ['"Bebas Neue"', "sans-serif"],
+        sans: ['"DM Sans"', "system-ui", "sans-serif"],
+        mono: ['"IBM Plex Mono"', "ui-monospace", "monospace"],
       },
       aspectRatio: {
         poster: "2 / 3",
