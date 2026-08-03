@@ -1,6 +1,6 @@
 services:
   movienight:
-    image: movienight:latest
+    image: brianjwalz/movienight:latest
     container_name: movienight
     restart: unless-stopped
     ports:
