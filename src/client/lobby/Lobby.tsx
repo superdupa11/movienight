@@ -1,15 +1,20 @@
-import { useState } from "react";
-import type { CategoryId, DeckFilters, PersonResult } from "../../shared/types";
-import { DECK_LIMIT_MAX, DECK_MIN_TO_START } from "../../shared/types";
+import { useEffect, useState } from "react";
+import type { CategoryId, DeckFilters, GenreMode, PersonResult } from "../../shared/types";
+import { DECK_MIN_TO_START } from "../../shared/types";
 import { useRoom } from "../shared/RoomContext";
 import CategoryPicker from "./CategoryPicker";
 import JoinQR from "./JoinQR";
 import PeopleTypeahead from "./PeopleTypeahead";
 
 export default function Lobby() {
-  const { state, setFilters, startSession, leaveRoom } = useRoom();
+  const { state, setFilters, setGenres, setGenreMode, startSession, leaveRoom } = useRoom();
   const isHost = state.you?.id === state.hostId;
   const [filters, setLocalFilters] = useState<DeckFilters>(state.filters);
+  const [myCategories, setMyCategories] = useState<CategoryId[]>(state.myCategories);
+  // Resyncs after externally-triggered resets (a host mode toggle clears
+  // everyone's picks server-side); doesn't fight the optimistic update in
+  // toggleGenre below since nothing else pushes state.myCategories changes.
+  useEffect(() => setMyCategories(state.myCategories), [state.myCategories]);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [directorNames, setDirectorNames] = useState<Map<number, string>>(new Map());
   const [castNames, setCastNames] = useState<Map<number, string>>(new Map());
@@ -22,6 +27,12 @@ export default function Lobby() {
     setFilters(merged);
   }
 
+  function toggleGenre(category: CategoryId) {
+    const next = myCategories.includes(category) ? myCategories.filter((c) => c !== category) : [...myCategories, category];
+    setMyCategories(next);
+    setGenres(next);
+  }
+
   async function handleStart() {
     setStarting(true);
     setStartError(undefined);
@@ -30,7 +41,6 @@ export default function Lobby() {
     if (!res.ok) setStartError(res.message);
   }
 
-  const allCategoryCount = state.categories.reduce((max, c) => Math.max(max, c.count), state.deckSize);
   const connectedCount = state.players.filter((p) => p.connected).length || state.players.length;
   const canStart = state.players.length >= 2 && state.deckSize >= DECK_MIN_TO_START && state.warm === "READY";
 
@@ -52,19 +62,28 @@ export default function Lobby() {
 
       <section className="flex flex-col gap-4 rounded-2xl bg-ink-800 p-4">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Category</h2>
+          <h2 className="font-semibold">Genres</h2>
           <WarmBadge warm={state.warm} progress={state.warmProgress} />
         </div>
-        <CategoryPicker
-          categories={state.categories}
-          value={filters.category}
-          editable={isHost}
-          allCount={allCategoryCount}
-          onChange={(category: CategoryId | "ALL") => update({ category })}
-        />
-        <p className="text-sm text-white/60">
-          {state.deckSize} movie{state.deckSize === 1 ? "" : "s"} in this deck
+
+        {isHost && <GenreModeToggle mode={state.genreMode} onChange={setGenreMode} />}
+
+        <p className="text-xs text-white/50">
+          {state.genreMode === "SHARED"
+            ? "Everyone's picks combine into one shared list."
+            : "Everyone builds their own deck from their own picks."}
         </p>
+
+        <CategoryPicker categories={state.categories} value={myCategories} onToggle={toggleGenre} />
+
+        <div className="flex items-center justify-between text-sm text-white/60">
+          <span>
+            {state.genreProgress.picked}/{state.genreProgress.total} people picked
+          </span>
+          <span>
+            {state.deckSize} movie{state.deckSize === 1 ? "" : "s"} in this deck
+          </span>
+        </div>
       </section>
 
       {isHost && (
@@ -89,18 +108,6 @@ export default function Lobby() {
               checked={!!filters.unwatchedOnly}
               onChange={(e) => update({ unwatchedOnly: e.target.checked })}
               className="h-5 w-5"
-            />
-          </label>
-
-          <label className="flex items-center justify-between text-sm font-medium">
-            Deck size
-            <input
-              type="number"
-              min={DECK_MIN_TO_START}
-              max={DECK_LIMIT_MAX}
-              value={filters.limit}
-              onChange={(e) => update({ limit: Number(e.target.value) })}
-              className="w-20 rounded-lg bg-ink-700 px-2 py-1 text-right"
             />
           </label>
 
@@ -161,6 +168,25 @@ export default function Lobby() {
       ) : (
         <p className="mt-auto text-center text-white/50">Waiting for the host to start…</p>
       )}
+    </div>
+  );
+}
+
+function GenreModeToggle({ mode, onChange }: { mode: GenreMode; onChange: (mode: GenreMode) => void }) {
+  return (
+    <div className="flex rounded-full bg-ink-700 p-1 text-xs font-medium">
+      <button
+        className={`flex-1 rounded-full py-1.5 transition ${mode === "SHARED" ? "bg-white text-ink-950" : "text-white/70"}`}
+        onClick={() => onChange("SHARED")}
+      >
+        Shared list
+      </button>
+      <button
+        className={`flex-1 rounded-full py-1.5 transition ${mode === "PERSONAL" ? "bg-white text-ink-950" : "text-white/70"}`}
+        onClick={() => onChange("PERSONAL")}
+      >
+        Everyone's own
+      </button>
     </div>
   );
 }

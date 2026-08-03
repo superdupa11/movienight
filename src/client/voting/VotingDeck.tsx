@@ -23,7 +23,7 @@ export default function VotingDeck() {
   const dragging = useRef(false);
   const exiting = useRef(false);
   const startX = useRef(0);
-  const lastVoted = useRef<number[]>([]);
+  const lastVoted = useRef<string[]>([]);
 
   useEffect(() => {
     const preloaded = new Set<string>();
@@ -41,9 +41,9 @@ export default function VotingDeck() {
   const accent = ACCENT_FALLBACK;
 
   function vote(liked: boolean) {
-    if (index >= total || exiting.current) return;
-    castVote(index, liked);
-    lastVoted.current.push(index);
+    if (index >= total || exiting.current || !current) return;
+    castVote(current.id, liked);
+    lastVoted.current.push(current.id);
     dragging.current = false;
     exiting.current = true;
     setDragX(liked ? FLY_OUT_PX : -FLY_OUT_PX);
@@ -56,12 +56,12 @@ export default function VotingDeck() {
   }
 
   function undo() {
-    const prev = lastVoted.current.pop();
-    if (prev == null) return;
-    undoVote(prev);
+    const prevMovieId = lastVoted.current.pop();
+    if (prevMovieId == null) return;
+    undoVote(prevMovieId);
     setFlipped(false);
     setDragX(0);
-    setIndex(prev);
+    setIndex((i) => Math.max(0, i - 1));
   }
 
   function onPointerDown(e: React.PointerEvent) {
@@ -151,7 +151,7 @@ export default function VotingDeck() {
               flipped={flipped}
               onFlip={() => {
                 setFlipped((f) => !f);
-                cardFlip(index);
+                cardFlip(current.id);
               }}
             />
           )}

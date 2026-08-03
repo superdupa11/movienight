@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from "react";
 import type { ReactNode } from "react";
 import type {
+  CategoryId,
   CategoryOption,
   DeckFilters,
   ErrorCode,
+  GenreMode,
   Movie,
   Player,
   PersonResult,
@@ -22,10 +24,13 @@ type State = {
   status: Status;
   code?: string;
   you?: { id: string; token: string };
+  myCategories: CategoryId[];
   hostId?: string;
   phase?: RoomPhase;
   players: Player[];
   filters: DeckFilters;
+  genreMode: GenreMode;
+  genreProgress: { picked: number; total: number };
   categories: CategoryOption[];
   deckSize: number;
   warm: WarmState;
@@ -45,8 +50,11 @@ type State = {
 
 const initialState: State = {
   status: "idle",
+  myCategories: [],
   players: [],
   filters: { ...DEFAULT_FILTERS },
+  genreMode: "SHARED",
+  genreProgress: { picked: 0, total: 0 },
   categories: [],
   deckSize: 0,
   warm: "COLD",
@@ -63,6 +71,8 @@ type Action =
   | { type: "PLAYER_PRESENCE"; id: string; connected: boolean }
   | { type: "PEOPLE_RESULTS"; q: string; role: "DIRECTOR" | "ACTOR"; people: PersonResult[] }
   | { type: "CATEGORIES"; categories: CategoryOption[] }
+  | { type: "GENRE_MODE"; mode: GenreMode }
+  | { type: "GENRE_PROGRESS"; picked: number; total: number }
   | { type: "PREVIEW"; deckSize: number }
   | { type: "WARMING"; warm: WarmState; done: number; total: number }
   | { type: "DECK_MANIFEST"; deckHash: string; assetUrls: string[] }
@@ -85,11 +95,14 @@ function reducer(state: State, action: Action): State {
         ...state,
         status: "in-room",
         code: action.dto.code,
-        you: action.dto.you,
+        you: { id: action.dto.you.id, token: action.dto.you.token },
+        myCategories: action.dto.you.categories,
         hostId: action.dto.hostId,
         phase: action.dto.phase,
         players: action.dto.players,
         filters: action.dto.filters,
+        genreMode: action.dto.genreMode,
+        genreProgress: action.dto.genreProgress,
         categories: action.dto.categories,
         deckSize: action.dto.deckSize,
         warm: action.dto.warm,
@@ -111,6 +124,12 @@ function reducer(state: State, action: Action): State {
       return { ...state, peopleResults: { ...state.peopleResults, [action.role]: { q: action.q, people: action.people } } };
     case "CATEGORIES":
       return { ...state, categories: action.categories, phase: "LOBBY" };
+    case "GENRE_MODE":
+      // Server resets everyone's picks on a mode change — mirror that locally
+      // so a guest's chip selection doesn't go stale (it was cleared server-side).
+      return { ...state, genreMode: action.mode, myCategories: [] };
+    case "GENRE_PROGRESS":
+      return { ...state, genreProgress: { picked: action.picked, total: action.total } };
     case "PREVIEW":
       return { ...state, deckSize: action.deckSize };
     case "WARMING":
@@ -153,12 +172,14 @@ type RoomApi = {
   rejoin: () => void;
   leaveRoom: () => void;
   setFilters: (filters: DeckFilters) => void;
+  setGenres: (categories: CategoryId[]) => void;
+  setGenreMode: (mode: GenreMode) => void;
   searchPeople: (q: string, role: "DIRECTOR" | "ACTOR") => void;
   startSession: () => Promise<{ ok: true } | { ok: false; message: string }>;
   clientReady: (deckHash: string) => void;
-  castVote: (idx: number, liked: boolean) => void;
-  undoVote: (idx: number) => void;
-  cardFlip: (idx: number) => void;
+  castVote: (movieId: string, liked: boolean) => void;
+  undoVote: (movieId: string) => void;
+  cardFlip: (movieId: string) => void;
   runoffPick: (movieId: string) => void;
   forceRunoff: () => void;
   resetSession: () => void;
@@ -179,6 +200,8 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("player:presence", (p) => dispatch({ type: "PLAYER_PRESENCE", ...p }));
     socket.on("people:results", (p) => dispatch({ type: "PEOPLE_RESULTS", ...p }));
     socket.on("lobby:categories", (categories) => dispatch({ type: "CATEGORIES", categories }));
+    socket.on("lobby:genreMode", (p) => dispatch({ type: "GENRE_MODE", mode: p.mode }));
+    socket.on("lobby:genreProgress", (p) => dispatch({ type: "GENRE_PROGRESS", ...p }));
     socket.on("lobby:preview", (p) => dispatch({ type: "PREVIEW", deckSize: p.deckSize }));
     socket.on("lobby:warming", (p) => dispatch({ type: "WARMING", ...p }));
     socket.on("deck:manifest", (p) => dispatch({ type: "DECK_MANIFEST", deckHash: p.deckHash, assetUrls: p.assetUrls }));
@@ -254,6 +277,8 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setFilters = useCallback((filters: DeckFilters) => socket.emit("lobby:filters", filters), []);
+  const setGenres = useCallback((categories: CategoryId[]) => socket.emit("lobby:genres", { categories }), []);
+  const setGenreMode = useCallback((mode: GenreMode) => socket.emit("lobby:genreMode", { mode }), []);
   const searchPeopleFn = useCallback((q: string, role: "DIRECTOR" | "ACTOR") => socket.emit("people:search", { q, role }), []);
 
   const startSession = useCallback(() => {
@@ -266,9 +291,9 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clientReady = useCallback((deckHash: string) => socket.emit("client:ready", { deckHash }), []);
-  const castVote = useCallback((idx: number, liked: boolean) => socket.emit("vote:cast", { idx, liked }), []);
-  const undoVote = useCallback((idx: number) => socket.emit("vote:undo", { idx }), []);
-  const cardFlip = useCallback((idx: number) => socket.emit("card:flip", { idx }), []);
+  const castVote = useCallback((movieId: string, liked: boolean) => socket.emit("vote:cast", { movieId, liked }), []);
+  const undoVote = useCallback((movieId: string) => socket.emit("vote:undo", { movieId }), []);
+  const cardFlip = useCallback((movieId: string) => socket.emit("card:flip", { movieId }), []);
   const runoffPick = useCallback((movieId: string) => socket.emit("runoff:pick", { movieId }), []);
   const forceRunoff = useCallback(() => socket.emit("runoff:force", {}), []);
   const resetSession = useCallback(() => socket.emit("session:reset", {}), []);
@@ -281,6 +306,8 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       rejoin,
       leaveRoom,
       setFilters,
+      setGenres,
+      setGenreMode,
       searchPeople: searchPeopleFn,
       startSession,
       clientReady,
@@ -291,7 +318,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       forceRunoff,
       resetSession,
     }),
-    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession],
+    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession],
   );
 
   return <RoomCtx.Provider value={api}>{children}</RoomCtx.Provider>;

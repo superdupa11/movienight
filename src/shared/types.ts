@@ -1,5 +1,18 @@
 // Shared between server and client. Mirrors docs/PROTOCOL.md §2, §4, §5 exactly —
 // event names and payload shapes here ARE the wire contract.
+//
+// Deviation from the literal protocol doc (flagged per CLAUDE.md's "raise the
+// conflict" rule): genre/category selection is now a guest-facing, multi-select
+// feature instead of a host-only single-select. That means deck order (and, in
+// PERSONAL mode, deck *content*) is no longer identical for every player, so
+// several mechanics that used to be room-wide got promoted to per-player:
+//   - matching switched from deckIndex-keyed to movieId-keyed (`vote:cast`,
+//     `vote:undo`, `card:flip` now carry `movieId` instead of `idx`)
+//   - `deck:manifest` / `deck:dealt` are delivered per-socket, not broadcast
+//   - `lobby:preview` / `lobby:warming` broadcast room-wide in SHARED mode but
+//     are delivered per-socket in PERSONAL mode (same payload shape either way)
+//   - the old `limit`-based deck-size cap is gone; a genre selection deals its
+//     full matching set (DECK_LIMIT_MAX remains only as a technical ceiling)
 
 export type CategoryId =
   | "COMEDY"
@@ -38,24 +51,33 @@ export const CATEGORY_LABELS: Record<CategoryId, string> = {
 
 export type RoomPhase = "LOBBY" | "BUILDING" | "VOTING" | "MATCHED" | "RUNOFF" | "RESOLVED";
 
+/**
+ * SHARED: every connected player's genre picks merge (OR/union) into one
+ * shared qualifying movie set; each player still gets their own shuffled
+ * order of that same set.
+ * PERSONAL: each player's deck is filtered by ONLY their own picks —
+ * decks can differ in content, not just order. Host-controlled.
+ */
+export type GenreMode = "SHARED" | "PERSONAL";
+
+// Host-controlled, room-wide, non-genre filters. Genre picks live separately
+// (per-player, see GenrePicks below) since they're guest-editable and their
+// aggregation depends on GenreMode.
 export type DeckFilters = {
-  category: CategoryId | "ALL";
   directors?: number[];
   cast?: number[];
   maxRuntime?: number;
   unwatchedOnly?: boolean;
   yearMin?: number;
   yearMax?: number;
-  limit: number;
 };
 
-export const DEFAULT_FILTERS: DeckFilters = {
-  category: "ALL",
-  limit: 40,
-};
+export const DEFAULT_FILTERS: DeckFilters = {};
 
-export const DECK_LIMIT_DEFAULT = 40;
-export const DECK_LIMIT_MAX = 100;
+// Technical safety ceiling only — not a default trim. A genre selection deals
+// its full matching set; this just guards against a pathological "every
+// category" selection producing an unbounded deck.
+export const DECK_LIMIT_MAX = 300;
 export const DECK_MIN_TO_START = 8;
 export const CATEGORY_GREY_OUT_BELOW = 5;
 export const PERSON_MIN_MOVIES_FOR_TYPEAHEAD = 2;
@@ -100,20 +122,27 @@ export type WarmState = "COLD" | "WARMING" | "READY";
 
 // The DTO sent to a joining/rejoining client on `room:state` — never the raw
 // server-side RoomState (that has Maps/Sets, which don't serialize).
+//
+// deckSize/warm/warmProgress/deck are always THIS VIEWER's own values (their
+// personal preview/deck), computed fresh at DTO-build time — never read from
+// a stale room-wide field, which was the source of a real bug where a client
+// joining/rejoining after the last recompute got stuck with deckSize: 0.
 export type RoomStateDTO = {
   code: string;
   phase: RoomPhase;
   hostId: string;
-  you: { id: string; token: string };
+  you: { id: string; token: string; categories: CategoryId[] };
   players: Player[];
   filters: DeckFilters;
+  genreMode: GenreMode;
+  genreProgress: { picked: number; total: number };
   categories: CategoryOption[];
   deckSize: number;
   warm: WarmState;
   warmProgress: { done: number; total: number };
   deck?: Movie[];
   progress?: { id: string; cursor: number; total: number }[];
-  result?: { movie: Movie; via: "match" | "runoff"; plexUrl: string };
+  result?: { movie: Movie; via: "match" | "runoff"; idx?: number; plexUrl: string };
   runoffCandidates?: { movie: Movie; yesCount: number }[];
   publicUrl: string;
 };
@@ -138,12 +167,19 @@ export type ClientToServerEvents = {
   "room:join": (payload: { code: string; name: string; token?: string }, cb: (res: RoomStateDTO | { error: ErrorCode; message?: string }) => void) => void;
   "room:leave": (payload: Record<string, never>) => void;
   "lobby:filters": (payload: DeckFilters) => void;
+  // Additions beyond the literal §4 table — genre picking moved from a
+  // host-only single-select inside `lobby:filters` to a guest-editable
+  // multi-select with its own aggregation mode.
+  "lobby:genres": (payload: { categories: CategoryId[] }) => void;
+  "lobby:genreMode": (payload: { mode: GenreMode }) => void;
   "people:search": (payload: { q: string; role: "DIRECTOR" | "ACTOR" }) => void;
   "session:start": (payload: Record<string, never>, cb?: (res: { ok: true } | { error: ErrorCode; message?: string }) => void) => void;
   "client:ready": (payload: { deckHash: string }) => void;
-  "card:flip": (payload: { idx: number }) => void;
-  "vote:cast": (payload: { idx: number; liked: boolean }) => void;
-  "vote:undo": (payload: { idx: number }) => void;
+  // idx -> movieId: see file header. A player's deck order/content is no
+  // longer guaranteed identical to anyone else's.
+  "card:flip": (payload: { movieId: string }) => void;
+  "vote:cast": (payload: { movieId: string; liked: boolean }) => void;
+  "vote:undo": (payload: { movieId: string }) => void;
   "runoff:pick": (payload: { movieId: string }) => void;
   "runoff:force": (payload: Record<string, never>) => void;
   "session:reset": (payload: Record<string, never>) => void;
@@ -161,11 +197,23 @@ export type ServerToClientEvents = {
   // no other way to route a response to the right box. Flagged as a spec gap.
   "people:results": (payload: { q: string; role: "DIRECTOR" | "ACTOR"; people: PersonResult[] }) => void;
   "lobby:categories": (payload: CategoryOption[]) => void;
-  "lobby:preview": (payload: { deckSize: number; category: CategoryId | "ALL" }) => void;
+  // Live-update broadcast for a mid-lobby mode toggle — room:state covers the
+  // join/rejoin snapshot, this covers everyone already connected.
+  "lobby:genreMode": (payload: { mode: GenreMode }) => void;
+  // Addition: lets clients show "N people have picked" without attributing
+  // picks to individuals (deliberately no per-user breakdown on the wire).
+  "lobby:genreProgress": (payload: { picked: number; total: number }) => void;
+  // Same payload shape as before `payload: { deckSize: number }` (category
+  // dropped — multi-select means there's no single "current category" to
+  // report). Delivery target depends on GenreMode: room-wide broadcast in
+  // SHARED, per-socket in PERSONAL — invisible to the client either way.
+  "lobby:preview": (payload: { deckSize: number }) => void;
   "lobby:warming": (payload: { warm: WarmState; done: number; total: number }) => void;
   "deck:manifest": (payload: { deckHash: string; assetUrls: string[] }) => void;
   "deck:dealt": (payload: { movies: Movie[]; phase: "VOTING" }) => void;
   "progress:update": (payload: { id: string; cursor: number; total: number }) => void;
+  // `idx` is now this recipient's own position in their own deck (match:found
+  // is delivered per-socket) — meaningful again despite decks differing.
   // `plexUrl` is an addition beyond the literal §5 table — PROTOCOL §6 asks
   // for "a deep link to the title in Plex" on the reveal screen, which needs
   // *some* Plex URL reaching the client. CLAUDE.md invariant #1 ("no Plex URL

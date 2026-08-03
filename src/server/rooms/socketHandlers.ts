@@ -4,22 +4,22 @@ import { z } from "zod";
 import { CATEGORY_IDS, type ErrorCode } from "../../shared/types.js";
 import { searchPeople } from "../db/people.js";
 import { signSessionToken, verifySessionToken } from "./auth.js";
-import { buildRoomStateDTO } from "./dto.js";
 import type { AppServer, AppSocket } from "./ioTypes.js";
 import { RoomManager } from "./roomManager.js";
 import type { Room } from "./Room.js";
 
-const CATEGORY_OR_ALL = [...CATEGORY_IDS, "ALL"] as unknown as [string, ...string[]];
-
 const deckFiltersSchema = z.object({
-  category: z.enum(CATEGORY_OR_ALL),
   directors: z.array(z.number()).optional(),
   cast: z.array(z.number()).optional(),
   maxRuntime: z.number().positive().optional(),
   unwatchedOnly: z.boolean().optional(),
   yearMin: z.number().optional(),
   yearMax: z.number().optional(),
-  limit: z.number(),
+});
+
+const CATEGORY_SET = new Set<string>(CATEGORY_IDS);
+const genresSchema = z.object({
+  categories: z.array(z.string().refine((c) => CATEGORY_SET.has(c))).max(CATEGORY_IDS.length),
 });
 
 export function registerSocketHandlers(io: AppServer, db: Database.Database): RoomManager {
@@ -59,14 +59,13 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       socket.data.userId = userId;
       socket.data.roomCode = room.code;
       void socket.join(room.code);
+      room.setSocketId(userId, socket.id);
 
       const token = viaToken ? (payload.token as string) : signSessionToken({ roomCode: room.code, userId });
-      cb(buildRoomStateDTO(room.toInternalState(), userId, token, room.categories));
+      cb(room.buildStateDTO(userId, token));
 
       const player = room.players.get(userId);
       socket.to(room.code).emit("player:joined", { id: userId, name: player?.name ?? name });
-
-      if (room.phase === "LOBBY" && room.warm === "COLD") room.scheduleFilterRecompute(true);
     });
 
     socket.on("room:leave", () => {
@@ -83,7 +82,26 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       if (socket.data.userId !== room.hostId) return emitError(socket, "ERR_NOT_HOST");
       const parsed = deckFiltersSchema.safeParse(payload);
       if (!parsed.success) return emitError(socket, "ERR_BAD_REQUEST", "Malformed filters");
-      room.setFilters(parsed.data as typeof room.filters);
+      room.setFilters(parsed.data);
+    });
+
+    // Guest-editable, unlike lobby:filters — any connected player sets their
+    // own genre picks. How picks combine into what's actually dealt depends
+    // on the host-controlled genreMode (see Room.setGenrePicks/genreMode).
+    socket.on("lobby:genres", (payload) => {
+      const room = roomFor(socket);
+      if (!room || !socket.data.userId) return emitError(socket, "ERR_ROOM_NOT_FOUND");
+      const parsed = genresSchema.safeParse(payload);
+      if (!parsed.success) return emitError(socket, "ERR_BAD_REQUEST", "Malformed genre picks");
+      room.setGenrePicks(socket.data.userId, parsed.data.categories as (typeof CATEGORY_IDS)[number][]);
+    });
+
+    socket.on("lobby:genreMode", ({ mode }) => {
+      const room = roomFor(socket);
+      if (!room || !socket.data.userId) return emitError(socket, "ERR_ROOM_NOT_FOUND");
+      if (mode !== "SHARED" && mode !== "PERSONAL") return emitError(socket, "ERR_BAD_REQUEST");
+      const result = room.setGenreMode(socket.data.userId, mode);
+      if (!result.ok) emitError(socket, result.error, result.message);
     });
 
     socket.on("people:search", ({ q, role }) => {
@@ -112,22 +130,22 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       if (room && socket.data.userId) room.clientReady(socket.data.userId, deckHash);
     });
 
-    socket.on("card:flip", ({ idx }) => {
+    socket.on("card:flip", ({ movieId }) => {
       const room = roomFor(socket);
-      if (room && socket.data.userId) room.cardFlip(socket.data.userId, idx);
+      if (room && socket.data.userId) room.cardFlip(socket.data.userId, movieId);
     });
 
-    socket.on("vote:cast", ({ idx, liked }) => {
+    socket.on("vote:cast", ({ movieId, liked }) => {
       const room = roomFor(socket);
       if (!room || !socket.data.userId) return;
-      const result = room.castVote(socket.data.userId, idx, !!liked);
+      const result = room.castVote(socket.data.userId, movieId, !!liked);
       if (!result.ok) emitError(socket, result.error, result.message);
     });
 
-    socket.on("vote:undo", ({ idx }) => {
+    socket.on("vote:undo", ({ movieId }) => {
       const room = roomFor(socket);
       if (!room || !socket.data.userId) return;
-      const result = room.undoVote(socket.data.userId, idx);
+      const result = room.undoVote(socket.data.userId, movieId);
       if (!result.ok) emitError(socket, result.error, result.message);
     });
 

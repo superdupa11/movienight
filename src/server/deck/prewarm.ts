@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { CategoryOption, DeckFilters } from "../../shared/types.js";
+import type { CategoryId, CategoryOption, DeckFilters } from "../../shared/types.js";
 import { getLibraryVersion } from "../db/index.js";
 import { getArtSources, setArtStatus } from "../db/movies.js";
 import { ensureArt } from "../plex/poster.js";
@@ -10,7 +10,7 @@ import { countQualifying, getCategoryOptions, getQualifyingMovieIds } from "./fi
 export type PrewarmResult = {
   deckHash: string;
   qualifyingCount: number;
-  deckSize: number; // min(qualifyingCount, filters.limit) — what the room actually deals
+  deckSize: number; // full matching set after art verification — no cap trim
   categories: CategoryOption[];
 };
 
@@ -48,25 +48,25 @@ async function verifyPool(ids: string[], db: Database.Database, onProgress?: (do
 export async function prewarmDeck(
   db: Database.Database,
   filters: DeckFilters,
+  categories: CategoryId[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<PrewarmResult> {
   const libraryVersion = getLibraryVersion(db);
-  const deckHash = computeDeckHash(filters, libraryVersion);
-  const categories = getCategoryOptions(db, filters);
-  const qualifyingCount = countQualifying(db, filters);
-  const deckSize = Math.min(qualifyingCount, filters.limit);
+  const deckHash = computeDeckHash(filters, categories, libraryVersion);
+  const categoryOptions = getCategoryOptions(db, filters);
+  const qualifyingCount = countQualifying(db, filters, categories);
 
   const cached = getCachedDeck(deckHash);
   if (cached) {
     onProgress?.(cached.movieIds.length, cached.movieIds.length);
-    return { deckHash, qualifyingCount, deckSize, categories };
+    return { deckHash, qualifyingCount, deckSize: cached.movieIds.length, categories: categoryOptions };
   }
 
-  const candidateIds = getQualifyingMovieIds(db, filters);
+  const candidateIds = getQualifyingMovieIds(db, filters, categories);
   const verifiedIds = await verifyPool(candidateIds, db, onProgress);
   setCachedDeck(deckHash, { movieIds: verifiedIds, warmedAt: Date.now(), assetsReady: true });
 
-  return { deckHash, qualifyingCount, deckSize, categories };
+  return { deckHash, qualifyingCount, deckSize: verifiedIds.length, categories: categoryOptions };
 }
 
 export { getCachedDeck } from "./cache.js";

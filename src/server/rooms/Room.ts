@@ -1,44 +1,62 @@
 import type Database from "better-sqlite3";
 import {
-  CATEGORY_LABELS,
+  CATEGORY_IDS,
   DECK_MIN_TO_START,
   DEFAULT_FILTERS,
   DISCONNECT_GRACE_MS,
   BUILDING_ACK_TIMEOUT_MS,
   LOBBY_FILTER_DEBOUNCE_MS,
+  type CategoryId,
   type CategoryOption,
   type DeckFilters,
+  type GenreMode,
+  type Movie,
+  type RoomStateDTO,
+  type ServerToClientEvents,
+  type WarmState,
 } from "../../shared/types.js";
 import { assembleMovies } from "../deck/assemble.js";
 import { getCachedDeck } from "../deck/cache.js";
-import { clampLimit, getQualifyingMovieIds } from "../deck/filters.js";
+import { getCategoryOptions, getQualifyingMovieIds } from "../deck/filters.js";
 import { prewarmDeck } from "../deck/prewarm.js";
 import { seededShuffle } from "../deck/shuffle.js";
+import { config } from "../config.js";
 import { plexWebUrl } from "../plex/webLink.js";
 import type { AppServer } from "./ioTypes.js";
 import { err, ok, type Result } from "./result.js";
 import { Throttler } from "./throttle.js";
-import type { PlayerInternal, RoomInternalState, RunoffCandidate } from "./types.js";
+import type { PlayerInternal, RunoffCandidate } from "./types.js";
+
+type WarmSnapshot = { warm: WarmState; warmProgress: { done: number; total: number }; deckHash: string; qualifyingCount: number; deckSize: number };
 
 export class Room {
   readonly code: string;
   hostId: string;
-  phase: RoomInternalState["phase"] = "LOBBY";
+  phase: RoomStateDTO["phase"] = "LOBBY";
   players = new Map<string, PlayerInternal>();
   filters: DeckFilters = { ...DEFAULT_FILTERS };
-  deckHash = "";
-  warm: RoomInternalState["warm"] = "COLD";
-  warmProgress = { done: 0, total: 0 };
-  deck: RoomInternalState["deck"] = [];
-  yeses = new Map<number, Set<string>>();
+  genreMode: GenreMode = "SHARED";
+  genrePicks = new Map<string, CategoryId[]>(); // userId -> their own picks
+  categories: CategoryOption[] = []; // global chip counts, mode-independent
+
+  playerDecks = new Map<string, Movie[]>();
+  private playerDeckIds = new Map<string, Set<string>>(); // O(1) "is movieId in my deck" checks
+  movieById = new Map<string, Movie>(); // union across every dealt deck, for match/runoff broadcasts
+
+  yeses = new Map<string, Set<string>>(); // movieId -> voter userIds
   runoffCandidates: RunoffCandidate[] = [];
-  runoffPicks = new Map<string, string>();
-  result: RoomInternalState["result"];
+  runoffPicks = new Map<string, string>(); // userId -> movieId
+  result?: RoomStateDTO["result"];
   createdAt = Date.now();
   lastActivityAt = Date.now();
-  categories: CategoryOption[] = [];
 
-  private lastQualifyingCount = 0;
+  // SHARED mode: one canonical set of values for the whole room.
+  private shared: WarmSnapshot = { warm: "COLD", warmProgress: { done: 0, total: 0 }, deckHash: "", qualifyingCount: 0, deckSize: 0 };
+  private sharedCategories: CategoryId[] = [];
+  // PERSONAL mode: independently tracked per player.
+  private personal = new Map<string, WarmSnapshot>();
+  private personalCategories = new Map<string, CategoryId[]>();
+
   private readyForVoting = new Set<string>();
   private buildingTimer?: NodeJS.Timeout;
   private filterDebounceTimer?: NodeJS.Timeout;
@@ -63,25 +81,18 @@ export class Room {
     return this.phase !== "LOBBY";
   }
 
-  toInternalState(): RoomInternalState {
-    return {
-      code: this.code,
-      phase: this.phase,
-      hostId: this.hostId,
-      players: this.players,
-      filters: this.filters,
-      deckHash: this.deckHash,
-      warm: this.warm,
-      warmProgress: this.warmProgress,
-      deck: this.deck,
-      yeses: this.yeses,
-      readyForVoting: this.readyForVoting,
-      runoffCandidates: this.runoffCandidates,
-      runoffPicks: this.runoffPicks,
-      result: this.result,
-      createdAt: this.createdAt,
-      lastActivityAt: this.lastActivityAt,
-    };
+  private emitToPlayer<K extends keyof ServerToClientEvents>(
+    userId: string,
+    event: K,
+    payload: Parameters<ServerToClientEvents[K]>[0],
+  ) {
+    const player = this.players.get(userId);
+    if (player?.socketId) (this.io.to(player.socketId).emit as (e: K, p: typeof payload) => void)(event, payload);
+  }
+
+  setSocketId(userId: string, socketId: string) {
+    const player = this.players.get(userId);
+    if (player) player.socketId = socketId;
   }
 
   // ---- membership ----------------------------------------------------
@@ -109,11 +120,21 @@ export class Room {
       name: name || "Player",
       connected: true,
       isHost: becomingHost || userId === this.hostId,
-      votedIndices: new Set(),
+      votedMovieIds: new Set(),
     };
     if (becomingHost) this.hostId = userId;
     this.players.set(userId, player);
+    this.genrePicks.set(userId, []);
     this.touch();
+
+    if (this.phase === "LOBBY") {
+      this.refreshCategoryOptions();
+      if (this.genreMode === "PERSONAL") {
+        void this.recomputePersonal(userId, ++this.recomputeToken);
+      } else if (this.shared.warm === "COLD") {
+        void this.recomputeShared(++this.recomputeToken);
+      }
+    }
     return ok();
   }
 
@@ -122,8 +143,14 @@ export class Room {
     if (!player) return;
     if (player.graceTimer) clearTimeout(player.graceTimer);
     this.players.delete(userId);
+    this.genrePicks.delete(userId);
+    this.personal.delete(userId);
+    this.personalCategories.delete(userId);
+    this.playerDecks.delete(userId);
+    this.playerDeckIds.delete(userId);
     this.progressThrottlers.delete(userId);
     this.io.to(this.code).emit("player:left", { id: userId, reason });
+    this.broadcastGenreProgress();
     this.touch();
 
     if (this.players.size === 0) {
@@ -173,9 +200,44 @@ export class Room {
 
   setFilters(filters: DeckFilters) {
     if (this.phase !== "LOBBY") return;
-    this.filters = { ...filters, limit: clampLimit(filters.limit) };
+    this.filters = { ...filters };
     this.touch();
     this.scheduleFilterRecompute();
+  }
+
+  setGenreMode(actorId: string, mode: GenreMode): Result {
+    if (actorId !== this.hostId) return err("ERR_NOT_HOST");
+    if (this.phase !== "LOBBY") return err("ERR_INVALID_PHASE");
+    if (mode !== this.genreMode) {
+      this.genreMode = mode;
+      for (const id of this.genrePicks.keys()) this.genrePicks.set(id, []);
+      this.touch();
+      this.io.to(this.code).emit("lobby:genreMode", { mode });
+      this.broadcastGenreProgress();
+      this.scheduleFilterRecompute(true);
+    }
+    return ok();
+  }
+
+  setGenrePicks(userId: string, categories: CategoryId[]) {
+    if (this.phase !== "LOBBY") return;
+    if (!this.players.has(userId)) return;
+    const deduped = [...new Set(categories)].filter((c) => (CATEGORY_IDS as string[]).includes(c));
+    this.genrePicks.set(userId, deduped);
+    this.touch();
+    this.broadcastGenreProgress();
+    this.scheduleFilterRecompute();
+  }
+
+  private broadcastGenreProgress() {
+    const picked = [...this.genrePicks.values()].filter((c) => c.length > 0).length;
+    this.io.to(this.code).emit("lobby:genreProgress", { picked, total: this.players.size });
+  }
+
+  private unionOfAllPicks(): CategoryId[] {
+    const set = new Set<CategoryId>();
+    for (const picks of this.genrePicks.values()) for (const c of picks) set.add(c);
+    return [...set];
   }
 
   scheduleFilterRecompute(immediate = false) {
@@ -187,41 +249,90 @@ export class Room {
     this.filterDebounceTimer = setTimeout(() => void this.runFilterRecompute(), LOBBY_FILTER_DEBOUNCE_MS);
   }
 
+  private refreshCategoryOptions() {
+    this.categories = getCategoryOptions(this.db, this.filters);
+    this.io.to(this.code).emit("lobby:categories", this.categories);
+  }
+
   private async runFilterRecompute() {
     const token = ++this.recomputeToken;
-    this.warm = "WARMING";
+    this.refreshCategoryOptions();
+
+    if (this.genreMode === "SHARED") {
+      await this.recomputeShared(token);
+    } else {
+      await Promise.all([...this.players.keys()].map((userId) => this.recomputePersonal(userId, token)));
+    }
+  }
+
+  private async recomputeShared(token: number) {
+    const categories = this.unionOfAllPicks();
+    this.shared = { ...this.shared, warm: "WARMING" };
     this.io.to(this.code).emit("lobby:warming", { warm: "WARMING", done: 0, total: 0 });
 
-    const result = await prewarmDeck(this.db, this.filters, (done, total) => {
+    const result = await prewarmDeck(this.db, this.filters, categories, (done, total) => {
       if (token !== this.recomputeToken) return;
       this.io.to(this.code).emit("lobby:warming", { warm: "WARMING", done, total });
     });
+    if (token !== this.recomputeToken) return;
 
-    if (token !== this.recomputeToken) return; // superseded by a newer filter change
-
-    this.deckHash = result.deckHash;
-    this.lastQualifyingCount = result.qualifyingCount;
-    this.categories = result.categories;
-    this.warm = "READY";
-    this.warmProgress = { done: result.deckSize, total: result.deckSize };
-
-    this.io.to(this.code).emit("lobby:categories", result.categories);
-    this.io.to(this.code).emit("lobby:preview", { deckSize: result.deckSize, category: this.filters.category });
+    this.sharedCategories = categories;
+    this.shared = {
+      warm: "READY",
+      warmProgress: { done: result.deckSize, total: result.deckSize },
+      deckHash: result.deckHash,
+      qualifyingCount: result.qualifyingCount,
+      deckSize: result.deckSize,
+    };
+    this.io.to(this.code).emit("lobby:preview", { deckSize: result.deckSize });
     this.io.to(this.code).emit("lobby:warming", { warm: "READY", done: result.deckSize, total: result.deckSize });
   }
 
-  private blameMessage(): string {
-    const n = this.lastQualifyingCount;
+  private async recomputePersonal(userId: string, token: number) {
+    if (!this.players.has(userId)) return;
+    const categories = this.genrePicks.get(userId) ?? [];
+    this.personal.set(userId, { ...(this.personal.get(userId) ?? this.emptySnapshot()), warm: "WARMING" });
+    this.emitToPlayer(userId, "lobby:warming", { warm: "WARMING", done: 0, total: 0 });
+
+    const result = await prewarmDeck(this.db, this.filters, categories, (done, total) => {
+      if (token !== this.recomputeToken) return;
+      this.emitToPlayer(userId, "lobby:warming", { warm: "WARMING", done, total });
+    });
+    if (token !== this.recomputeToken || !this.players.has(userId)) return;
+
+    this.personalCategories.set(userId, categories);
+    this.personal.set(userId, {
+      warm: "READY",
+      warmProgress: { done: result.deckSize, total: result.deckSize },
+      deckHash: result.deckHash,
+      qualifyingCount: result.qualifyingCount,
+      deckSize: result.deckSize,
+    });
+    this.emitToPlayer(userId, "lobby:preview", { deckSize: result.deckSize });
+    this.emitToPlayer(userId, "lobby:warming", { warm: "READY", done: result.deckSize, total: result.deckSize });
+  }
+
+  private emptySnapshot(): WarmSnapshot {
+    return { warm: "COLD", warmProgress: { done: 0, total: 0 }, deckHash: "", qualifyingCount: 0, deckSize: 0 };
+  }
+
+  private snapshotFor(userId: string): WarmSnapshot {
+    return this.genreMode === "SHARED" ? this.shared : (this.personal.get(userId) ?? this.emptySnapshot());
+  }
+
+  private categoriesFor(userId: string): CategoryId[] {
+    return this.genreMode === "SHARED" ? this.sharedCategories : (this.personalCategories.get(userId) ?? []);
+  }
+
+  private blameMessage(qualifyingCount: number): string {
+    const n = qualifyingCount;
     if ((this.filters.directors?.length ?? 0) > 0 || (this.filters.cast?.length ?? 0) > 0) {
       return `Only ${n} movies match — the director/cast filter is doing the damage. Try widening it.`;
     }
     if (this.filters.maxRuntime != null) {
       return `Only ${n} movies match — try raising the max runtime.`;
     }
-    if (this.filters.category !== "ALL") {
-      return `Only ${n} movies match ${CATEGORY_LABELS[this.filters.category]} with your other filters.`;
-    }
-    return `Only ${n} movies match your filters.`;
+    return `Only ${n} movies match the selected genres. Try adding more.`;
   }
 
   // ---- session lifecycle -------------------------------------------------
@@ -230,19 +341,41 @@ export class Room {
     if (this.phase !== "LOBBY") return err("ERR_INVALID_PHASE");
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
     if (this.players.size < 2) return err("ERR_BAD_REQUEST", "Need at least 2 players to start.");
-    if (this.lastQualifyingCount < DECK_MIN_TO_START) return err("ERR_DECK_TOO_SMALL", this.blameMessage());
-    if (this.warm !== "READY") return err("ERR_DECK_COLD", "Deck is still warming — try again in a moment.");
 
-    const cached = getCachedDeck(this.deckHash);
-    const candidateIds = cached?.movieIds ?? getQualifyingMovieIds(this.db, this.filters);
-    const seed = `${this.code}:${Date.now()}:${Math.random()}`;
-    const shuffled = seededShuffle(candidateIds, seed).slice(0, this.filters.limit);
-    this.deck = assembleMovies(this.db, shuffled);
+    if (this.genreMode === "SHARED") {
+      if (this.shared.qualifyingCount < DECK_MIN_TO_START) return err("ERR_DECK_TOO_SMALL", this.blameMessage(this.shared.qualifyingCount));
+      if (this.shared.warm !== "READY") return err("ERR_DECK_COLD", "Deck is still warming — try again in a moment.");
+    } else {
+      for (const [id, player] of this.players) {
+        const snap = this.personal.get(id) ?? this.emptySnapshot();
+        if (snap.qualifyingCount < DECK_MIN_TO_START) {
+          return err("ERR_DECK_TOO_SMALL", `${player.name} only matches ${snap.qualifyingCount} movies — they need to pick more genres.`);
+        }
+        if (snap.warm !== "READY") return err("ERR_DECK_COLD", "Still warming — try again in a moment.");
+      }
+    }
 
     this.phase = "BUILDING";
     this.readyForVoting.clear();
-    const assetUrls = this.deck.flatMap((m) => [m.posterUrl, ...(m.backdropUrl ? [m.backdropUrl] : [])]);
-    this.io.to(this.code).emit("deck:manifest", { deckHash: this.deckHash, assetUrls });
+    this.movieById.clear();
+    this.playerDecks.clear();
+    this.playerDeckIds.clear();
+
+    for (const userId of this.players.keys()) {
+      const categories = this.categoriesFor(userId);
+      const deckHash = this.snapshotFor(userId).deckHash;
+      const cached = getCachedDeck(deckHash);
+      const candidateIds = cached?.movieIds ?? getQualifyingMovieIds(this.db, this.filters, categories);
+      const seed = `${this.code}:${userId}:${Date.now()}:${Math.random()}`;
+      const movies = assembleMovies(this.db, seededShuffle(candidateIds, seed));
+
+      this.playerDecks.set(userId, movies);
+      this.playerDeckIds.set(userId, new Set(movies.map((m) => m.id)));
+      for (const m of movies) this.movieById.set(m.id, m);
+
+      const assetUrls = movies.flatMap((m) => [m.posterUrl, ...(m.backdropUrl ? [m.backdropUrl] : [])]);
+      this.emitToPlayer(userId, "deck:manifest", { deckHash, assetUrls });
+    }
 
     clearTimeout(this.buildingTimer);
     this.buildingTimer = setTimeout(() => this.dealDeck(), BUILDING_ACK_TIMEOUT_MS);
@@ -251,7 +384,7 @@ export class Room {
   }
 
   clientReady(userId: string, deckHash: string) {
-    if (this.phase !== "BUILDING" || deckHash !== this.deckHash) return;
+    if (this.phase !== "BUILDING" || deckHash !== this.snapshotFor(userId).deckHash) return;
     this.readyForVoting.add(userId);
     if (this.readyForVoting.size >= this.players.size) {
       clearTimeout(this.buildingTimer);
@@ -263,27 +396,30 @@ export class Room {
     if (this.phase !== "BUILDING") return;
     this.phase = "VOTING";
     this.yeses.clear();
-    for (const p of this.players.values()) p.votedIndices.clear();
+    for (const p of this.players.values()) p.votedMovieIds.clear();
     this.touch();
-    this.io.to(this.code).emit("deck:dealt", { movies: this.deck, phase: "VOTING" });
+    for (const [userId, movies] of this.playerDecks) {
+      this.emitToPlayer(userId, "deck:dealt", { movies, phase: "VOTING" });
+    }
   }
 
   // ---- voting -------------------------------------------------------
 
-  castVote(userId: string, idx: number, liked: boolean): Result {
+  castVote(userId: string, movieId: string, liked: boolean): Result {
     if (this.phase !== "VOTING") return err("ERR_INVALID_PHASE");
     const player = this.players.get(userId);
     if (!player) return err("ERR_BAD_REQUEST", "Not in room");
-    if (idx < 0 || idx >= this.deck.length) return err("ERR_BAD_REQUEST", "Bad deck index");
+    const deckIds = this.playerDeckIds.get(userId);
+    if (!deckIds?.has(movieId)) return err("ERR_BAD_REQUEST", "Not in your deck");
 
-    if (player.votedIndices.has(idx)) return ok(); // idempotent: duplicate vote:cast is a no-op
+    if (player.votedMovieIds.has(movieId)) return ok(); // idempotent: duplicate vote:cast is a no-op
 
-    player.votedIndices.add(idx);
+    player.votedMovieIds.add(movieId);
     if (liked) {
-      let set = this.yeses.get(idx);
+      let set = this.yeses.get(movieId);
       if (!set) {
         set = new Set();
-        this.yeses.set(idx, set);
+        this.yeses.set(movieId, set);
       }
       set.add(userId);
     }
@@ -295,33 +431,32 @@ export class Room {
     return ok();
   }
 
-  undoVote(userId: string, idx: number): Result {
+  undoVote(userId: string, movieId: string): Result {
     if (this.phase !== "VOTING") return err("ERR_INVALID_PHASE");
     const player = this.players.get(userId);
     if (!player) return err("ERR_BAD_REQUEST", "Not in room");
-    if (!player.votedIndices.has(idx)) return ok();
+    if (!player.votedMovieIds.has(movieId)) return ok();
 
-    player.votedIndices.delete(idx);
-    this.yeses.get(idx)?.delete(userId);
+    player.votedMovieIds.delete(movieId);
+    this.yeses.get(movieId)?.delete(userId);
     this.touch();
     this.emitProgress(player);
     return ok();
   }
 
   private emitProgress(player: PlayerInternal) {
+    const total = this.playerDecks.get(player.id)?.length ?? 0;
     let throttler = this.progressThrottlers.get(player.id);
     if (!throttler) {
       throttler = new Throttler(250);
       this.progressThrottlers.set(player.id, throttler);
     }
     throttler.run(() => {
-      this.io
-        .to(this.code)
-        .emit("progress:update", { id: player.id, cursor: player.votedIndices.size, total: this.deck.length });
+      this.io.to(this.code).emit("progress:update", { id: player.id, cursor: player.votedMovieIds.size, total });
     });
   }
 
-  cardFlip(_userId: string, _idx: number) {
+  cardFlip(_userId: string, _movieId: string) {
     // Optional telemetry only (PROTOCOL §4) — no state change, no broadcast.
   }
 
@@ -331,20 +466,25 @@ export class Room {
     const quorum = this.players.size;
     if (quorum === 0) return false;
 
-    let matchedIdx: number | undefined;
-    for (const [idx, voters] of this.yeses) {
-      if (voters.size === quorum && (matchedIdx === undefined || idx < matchedIdx)) {
-        matchedIdx = idx;
+    let matchedMovieId: string | undefined;
+    for (const [movieId, voters] of this.yeses) {
+      if (voters.size === quorum && (matchedMovieId === undefined || movieId < matchedMovieId)) {
+        matchedMovieId = movieId;
       }
     }
-    if (matchedIdx === undefined) return false;
+    if (matchedMovieId === undefined) return false;
 
-    const movie = this.deck[matchedIdx];
+    const movie = this.movieById.get(matchedMovieId);
     if (!movie) return false;
     const plexUrl = plexWebUrl(movie.id);
     this.result = { movie, via: "match", plexUrl };
     this.phase = "MATCHED";
-    this.io.to(this.code).emit("match:found", { movie, idx: matchedIdx, note, plexUrl });
+
+    for (const userId of this.players.keys()) {
+      const deck = this.playerDecks.get(userId) ?? [];
+      const idx = Math.max(deck.findIndex((m) => m.id === matchedMovieId), 0);
+      this.emitToPlayer(userId, "match:found", { movie, idx, note, plexUrl });
+    }
     // No client ack event is defined on the wire for MATCHED's "auto-advance" —
     // the reveal is driven entirely by match:found, so we advance immediately.
     this.phase = "RESOLVED";
@@ -354,20 +494,30 @@ export class Room {
 
   private checkExhaustion() {
     if (this.phase !== "VOTING") return;
-    const allExhausted = [...this.players.values()].every((p) => p.votedIndices.size >= this.deck.length);
+    const allExhausted = [...this.players.values()].every(
+      (p) => p.votedMovieIds.size >= (this.playerDecks.get(p.id)?.length ?? 0),
+    );
     if (!allExhausted) return;
     this.startRunoffOrResolveEmpty();
   }
 
   private startRunoffOrResolveEmpty() {
-    const scored = this.deck
-      .map((movie, idx) => ({ movie, idx, yesCount: this.yeses.get(idx)?.size ?? 0 }))
+    const scored = [...this.yeses.entries()]
+      .map(([movieId, voters]) => ({ movieId, yesCount: voters.size }))
       .filter((e) => e.yesCount > 0)
-      .sort((a, b) => b.yesCount - a.yesCount || a.idx - b.idx)
+      .sort((a, b) => b.yesCount - a.yesCount || (a.movieId < b.movieId ? -1 : 1))
       .slice(0, 5);
 
     this.touch();
-    if (scored.length < 2) {
+
+    const candidates = scored
+      .map((e) => {
+        const movie = this.movieById.get(e.movieId);
+        return movie ? { movie, yesCount: e.yesCount } : undefined;
+      })
+      .filter((c): c is RunoffCandidate => !!c);
+
+    if (candidates.length < 2) {
       this.phase = "RESOLVED";
       this.result = undefined;
       this.io.to(this.code).emit("session:resolved:empty", {
@@ -376,7 +526,7 @@ export class Room {
       return;
     }
 
-    this.runoffCandidates = scored.map((e) => ({ movie: e.movie, yesCount: e.yesCount }));
+    this.runoffCandidates = candidates;
     this.runoffPicks.clear();
     this.phase = "RUNOFF";
     this.io.to(this.code).emit("runoff:start", { candidates: this.runoffCandidates });
@@ -410,7 +560,7 @@ export class Room {
 
     let winner: RunoffCandidate | undefined;
     let winnerVotes = -1;
-    // Candidates are already ordered by original yesCount desc / idx asc, so
+    // Candidates are already ordered by original yesCount desc / movieId asc, so
     // the first max in this scan is the correct tiebreak.
     for (const c of this.runoffCandidates) {
       const votes = tally.get(c.movie.id) ?? 0;
@@ -435,16 +585,67 @@ export class Room {
     if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
 
     this.phase = "LOBBY";
-    this.deck = [];
+    this.playerDecks.clear();
+    this.playerDeckIds.clear();
+    this.movieById.clear();
     this.yeses.clear();
     this.readyForVoting.clear();
     this.runoffCandidates = [];
     this.runoffPicks.clear();
     this.result = undefined;
-    for (const p of this.players.values()) p.votedIndices.clear();
+    for (const p of this.players.values()) p.votedMovieIds.clear();
     this.touch();
     this.scheduleFilterRecompute(true);
     return ok();
+  }
+
+  // ---- DTO -------------------------------------------------------
+
+  buildStateDTO(viewerId: string, viewerToken: string): RoomStateDTO {
+    const players = [...this.players.values()].map((p) => ({
+      id: p.id,
+      name: p.name,
+      connected: p.connected,
+      isHost: p.isHost,
+      cursor: p.votedMovieIds.size,
+    }));
+
+    const progress =
+      this.phase === "VOTING"
+        ? [...this.players.values()].map((p) => ({
+            id: p.id,
+            cursor: p.votedMovieIds.size,
+            total: this.playerDecks.get(p.id)?.length ?? 0,
+          }))
+        : undefined;
+
+    const deck =
+      this.phase === "VOTING" || this.phase === "MATCHED" || this.phase === "RESOLVED"
+        ? this.playerDecks.get(viewerId)
+        : undefined;
+
+    const picked = [...this.genrePicks.values()].filter((c) => c.length > 0).length;
+    const snap = this.snapshotFor(viewerId);
+
+    return {
+      code: this.code,
+      phase: this.phase,
+      hostId: this.hostId,
+      you: { id: viewerId, token: viewerToken, categories: this.genrePicks.get(viewerId) ?? [] },
+      players,
+      filters: this.filters,
+      genreMode: this.genreMode,
+      genreProgress: { picked, total: this.players.size },
+      categories: this.categories,
+      deckSize: snap.deckSize,
+      warm: snap.warm,
+      warmProgress: snap.warmProgress,
+      deck,
+      progress,
+      result: this.result,
+      runoffCandidates: this.phase === "RUNOFF" ? this.runoffCandidates : undefined,
+      publicUrl: config.publicUrl,
+    };
   }
 
   destroy() {
