@@ -23,6 +23,12 @@ RUN npm ci --omit=dev
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# Container-appropriate defaults matching the /data VOLUME below — safe to
+# bake in since none of these are secrets. PLEX_URL, PLEX_TOKEN,
+# SESSION_SECRET, PUBLIC_URL stay required-with-no-default on purpose.
+ENV PORT=8080 \
+    DB_PATH=/data/movienight.db \
+    ART_CACHE_DIR=/data/art
 
 # vips for sharp poster transcoding; tini for correct signal handling
 RUN apt-get update && apt-get install -y --no-install-recommends \
