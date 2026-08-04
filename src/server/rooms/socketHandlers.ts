@@ -101,6 +101,14 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       if (!result.ok) emitError(socket, result.error, result.message);
     });
 
+    socket.on("lobby:solo", ({ solo }) => {
+      const room = roomFor(socket);
+      if (!room || !socket.data.userId) return emitError(socket, "ERR_ROOM_NOT_FOUND");
+      if (typeof solo !== "boolean") return emitError(socket, "ERR_BAD_REQUEST");
+      const result = room.setSolo(socket.data.userId, solo);
+      if (!result.ok) emitError(socket, result.error, result.message);
+    });
+
     socket.on("people:search", ({ q, role }) => {
       const room = roomFor(socket);
       if (!room) return emitError(socket, "ERR_ROOM_NOT_FOUND");

@@ -11,3 +11,20 @@ body,
 body {
   overscroll-behavior-y: contain;
 }
+
+@keyframes mn-up {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+@keyframes mn-down {
+  from {
+    transform: translateY(-50%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}

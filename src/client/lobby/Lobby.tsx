@@ -7,7 +7,7 @@ import JoinQR from "./JoinQR";
 import PeopleTypeahead from "./PeopleTypeahead";
 
 export default function Lobby() {
-  const { state, setFilters, setGenres, setGenreMode, startSession, leaveRoom } = useRoom();
+  const { state, setFilters, setGenres, setGenreMode, setSolo, startSession, leaveRoom } = useRoom();
   const isHost = state.you?.id === state.hostId;
   const [filters, setLocalFilters] = useState<DeckFilters>(state.filters);
   const [myCategories, setMyCategories] = useState<CategoryId[]>(state.myCategories);
@@ -15,7 +15,6 @@ export default function Lobby() {
   // everyone's picks server-side); doesn't fight the optimistic update in
   // toggleGenre below since nothing else pushes state.myCategories changes.
   useEffect(() => setMyCategories(state.myCategories), [state.myCategories]);
-  const [peopleOpen, setPeopleOpen] = useState(false);
   const [directorNames, setDirectorNames] = useState<Map<number, string>>(new Map());
   const [castNames, setCastNames] = useState<Map<number, string>>(new Map());
   const [starting, setStarting] = useState(false);
@@ -46,78 +45,110 @@ export default function Lobby() {
   const canStart = state.players.length >= (state.solo ? 1 : 2) && state.deckSize >= DECK_MIN_TO_START && state.warm === "READY";
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-4 py-8">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Movie Night</h1>
-          <p className="text-sm text-white/50">{connectedCount} in the room</p>
+    <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 pb-8">
+      <header className="sticky top-0 z-20 -mx-4 flex flex-col gap-3 bg-ink-950/95 px-4 pb-3 pt-6 ring-1 ring-white/5 backdrop-blur">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Movie Night</h1>
+            <p className="text-sm text-white/50">{connectedCount} in the room</p>
+          </div>
+          <button
+            onClick={leaveRoom}
+            className="rounded-full bg-ink-800 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-white/70 ring-1 ring-white/10 transition active:scale-95"
+          >
+            Leave
+          </button>
         </div>
-        <button onClick={leaveRoom} className="text-sm text-white/50 underline">
-          Leave
-        </button>
+
+        {isHost ? (
+          <div className="flex flex-col gap-2">
+            {startError && <p className="text-center text-sm text-red-400">{startError}</p>}
+            <button
+              disabled={!canStart || starting}
+              onClick={handleStart}
+              className="rounded-xl bg-white py-3.5 text-base font-semibold text-ink-950 transition active:scale-[0.98] disabled:opacity-40"
+            >
+              {starting ? "Starting…" : soloRightNow ? "Start Solo" : "Start Group"}
+            </button>
+          </div>
+        ) : (
+          <p className="text-center text-sm text-white/50">Waiting for the host to start…</p>
+        )}
       </header>
 
-      {isHost && state.publicUrl && <JoinQR code={state.code!} publicUrl={state.publicUrl} />}
+      <div className="flex flex-col gap-6 pt-6">
+        {isHost && (
+          <section className="flex flex-col gap-3 rounded-2xl bg-ink-800 p-4">
+            <label className="flex items-center justify-between text-sm font-medium">
+              Just me tonight — solo picks
+              <input
+                type="checkbox"
+                checked={state.solo}
+                onChange={(e) => setSolo(e.target.checked)}
+                className="h-5 w-5"
+              />
+            </label>
+            {!state.solo && state.publicUrl && <JoinQR code={state.code!} publicUrl={state.publicUrl} />}
+          </section>
+        )}
 
-      <PlayerList />
+        <PlayerList />
 
-      <section className="flex flex-col gap-4 rounded-2xl bg-ink-800 p-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Genres</h2>
-          <WarmBadge warm={state.warm} progress={state.warmProgress} />
-        </div>
-
-        {isHost && <GenreModeToggle mode={state.genreMode} onChange={setGenreMode} />}
-
-        <p className="text-xs text-white/50">
-          {state.genreMode === "SHARED"
-            ? "Only movies that overlap with everyone's picks make the cut."
-            : "Everyone builds their own deck from their own picks."}
-        </p>
-
-        <CategoryPicker categories={state.categories} value={myCategories} onToggle={toggleGenre} />
-
-        <div className="flex items-center justify-between text-sm text-white/60">
-          <span>
-            {state.genreProgress.picked}/{state.genreProgress.total} people picked
-          </span>
-          <span>
-            {state.deckSize} movie{state.deckSize === 1 ? "" : "s"} in this deck
-          </span>
-        </div>
-      </section>
-
-      {isHost && (
         <section className="flex flex-col gap-4 rounded-2xl bg-ink-800 p-4">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">Max runtime</label>
-            <span className="text-sm text-white/60">{filters.maxRuntime ? `${filters.maxRuntime} min` : "Any"}</span>
+            <h2 className="font-semibold">Genres</h2>
+            <WarmBadge warm={state.warm} progress={state.warmProgress} />
           </div>
-          <input
-            type="range"
-            min={60}
-            max={210}
-            step={5}
-            value={filters.maxRuntime ?? 210}
-            onChange={(e) => update({ maxRuntime: Number(e.target.value) === 210 ? undefined : Number(e.target.value) })}
-          />
 
-          <label className="flex items-center justify-between text-sm font-medium">
-            Unwatched only
+          {isHost && <GenreModeToggle mode={state.genreMode} onChange={setGenreMode} />}
+
+          <p className="text-xs text-white/50">
+            {state.genreMode === "SHARED"
+              ? "Only movies that overlap with everyone's picks make the cut."
+              : "Everyone builds their own deck from their own picks."}
+          </p>
+
+          <CategoryPicker categories={state.categories} value={myCategories} onToggle={toggleGenre} />
+
+          <div className="flex items-center justify-between text-sm text-white/60">
+            <span>
+              {state.genreProgress.picked}/{state.genreProgress.total} people picked
+            </span>
+            <span>
+              {state.deckSize} movie{state.deckSize === 1 ? "" : "s"} in this deck
+            </span>
+          </div>
+        </section>
+
+        {isHost && (
+          <section className="flex flex-col gap-4 rounded-2xl bg-ink-800 p-4">
+            <h2 className="font-semibold">Filters</h2>
+
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Max runtime</label>
+              <span className="text-sm text-white/60">{filters.maxRuntime ? `${filters.maxRuntime} min` : "Any"}</span>
+            </div>
             <input
-              type="checkbox"
-              checked={!!filters.unwatchedOnly}
-              onChange={(e) => update({ unwatchedOnly: e.target.checked })}
-              className="h-5 w-5"
+              type="range"
+              min={60}
+              max={210}
+              step={5}
+              value={filters.maxRuntime ?? 210}
+              onChange={(e) => update({ maxRuntime: Number(e.target.value) === 210 ? undefined : Number(e.target.value) })}
             />
-          </label>
 
-          <button className="text-left text-sm font-medium text-white/70 underline" onClick={() => setPeopleOpen((v) => !v)}>
-            {peopleOpen ? "Hide" : "Narrow by cast or director"}
-          </button>
+            <label className="flex items-center justify-between text-sm font-medium">
+              Unwatched only
+              <input
+                type="checkbox"
+                checked={!!filters.unwatchedOnly}
+                onChange={(e) => update({ unwatchedOnly: e.target.checked })}
+                className="h-5 w-5"
+              />
+            </label>
 
-          {peopleOpen && (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-4 border-t border-white/10 pt-4">
+              <p className="text-sm font-medium">Narrow by cast or director</p>
               <PeopleTypeahead
                 role="DIRECTOR"
                 label="Director"
@@ -151,24 +182,9 @@ export default function Lobby() {
                 }}
               />
             </div>
-          )}
-        </section>
-      )}
-
-      {isHost ? (
-        <div className="mt-auto flex flex-col gap-2">
-          {startError && <p className="text-center text-sm text-red-400">{startError}</p>}
-          <button
-            disabled={!canStart || starting}
-            onClick={handleStart}
-            className="rounded-xl bg-white py-4 text-lg font-semibold text-ink-950 transition active:scale-[0.98] disabled:opacity-40"
-          >
-            {starting ? "Starting…" : soloRightNow ? "Start Solo" : "Start Group"}
-          </button>
-        </div>
-      ) : (
-        <p className="mt-auto text-center text-white/50">Waiting for the host to start…</p>
-      )}
+          </section>
+        )}
+      </div>
     </div>
   );
 }

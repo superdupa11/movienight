@@ -69,7 +69,7 @@ export class Room {
     hostId: string,
     private readonly io: AppServer,
     private readonly db: Database.Database,
-    readonly solo: boolean = false,
+    public solo: boolean = false,
   ) {
     this.code = code;
     this.hostId = hostId;
@@ -228,6 +228,17 @@ export class Room {
       this.io.to(this.code).emit("lobby:genreMode", { mode });
       this.broadcastGenreProgress();
       this.scheduleFilterRecompute(true);
+    }
+    return ok();
+  }
+
+  setSolo(actorId: string, solo: boolean): Result {
+    if (actorId !== this.hostId) return err("ERR_NOT_HOST");
+    if (this.phase !== "LOBBY") return err("ERR_INVALID_PHASE");
+    if (solo !== this.solo) {
+      this.solo = solo;
+      this.touch();
+      this.io.to(this.code).emit("lobby:solo", { solo });
     }
     return ok();
   }

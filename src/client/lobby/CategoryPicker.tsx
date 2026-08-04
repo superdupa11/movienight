@@ -8,9 +8,10 @@ type Props = {
 };
 
 export default function CategoryPicker({ categories, value, onToggle }: Props) {
+  const sorted = [...categories].sort((a, b) => a.label.localeCompare(b.label));
   return (
     <div className="flex flex-wrap gap-2">
-      {categories.map((c) => (
+      {sorted.map((c) => (
         <Chip key={c.id} label={c.label} count={c.count} selected={value.includes(c.id)} onClick={() => onToggle(c.id)} />
       ))}
     </div>

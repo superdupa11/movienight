@@ -74,6 +74,7 @@ type Action =
   | { type: "PEOPLE_RESULTS"; q: string; role: "DIRECTOR" | "ACTOR"; people: PersonResult[] }
   | { type: "CATEGORIES"; categories: CategoryOption[] }
   | { type: "GENRE_MODE"; mode: GenreMode }
+  | { type: "SOLO_MODE"; solo: boolean }
   | { type: "GENRE_PROGRESS"; picked: number; total: number }
   | { type: "PREVIEW"; deckSize: number }
   | { type: "WARMING"; warm: WarmState; done: number; total: number }
@@ -131,6 +132,8 @@ function reducer(state: State, action: Action): State {
       // Server resets everyone's picks on a mode change — mirror that locally
       // so a guest's chip selection doesn't go stale (it was cleared server-side).
       return { ...state, genreMode: action.mode, myCategories: [] };
+    case "SOLO_MODE":
+      return { ...state, solo: action.solo };
     case "GENRE_PROGRESS":
       return { ...state, genreProgress: { picked: action.picked, total: action.total } };
     case "PREVIEW":
@@ -177,6 +180,7 @@ type RoomApi = {
   setFilters: (filters: DeckFilters) => void;
   setGenres: (categories: CategoryId[]) => void;
   setGenreMode: (mode: GenreMode) => void;
+  setSolo: (solo: boolean) => void;
   searchPeople: (q: string, role: "DIRECTOR" | "ACTOR") => void;
   startSession: () => Promise<{ ok: true } | { ok: false; message: string }>;
   clientReady: (deckHash: string) => void;
@@ -204,6 +208,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("people:results", (p) => dispatch({ type: "PEOPLE_RESULTS", ...p }));
     socket.on("lobby:categories", (categories) => dispatch({ type: "CATEGORIES", categories }));
     socket.on("lobby:genreMode", (p) => dispatch({ type: "GENRE_MODE", mode: p.mode }));
+    socket.on("lobby:solo", (p) => dispatch({ type: "SOLO_MODE", solo: p.solo }));
     socket.on("lobby:genreProgress", (p) => dispatch({ type: "GENRE_PROGRESS", ...p }));
     socket.on("lobby:preview", (p) => dispatch({ type: "PREVIEW", deckSize: p.deckSize }));
     socket.on("lobby:warming", (p) => dispatch({ type: "WARMING", ...p }));
@@ -282,6 +287,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const setFilters = useCallback((filters: DeckFilters) => socket.emit("lobby:filters", filters), []);
   const setGenres = useCallback((categories: CategoryId[]) => socket.emit("lobby:genres", { categories }), []);
   const setGenreMode = useCallback((mode: GenreMode) => socket.emit("lobby:genreMode", { mode }), []);
+  const setSolo = useCallback((solo: boolean) => socket.emit("lobby:solo", { solo }), []);
   const searchPeopleFn = useCallback((q: string, role: "DIRECTOR" | "ACTOR") => socket.emit("people:search", { q, role }), []);
 
   const startSession = useCallback(() => {
@@ -311,6 +317,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       setFilters,
       setGenres,
       setGenreMode,
+      setSolo,
       searchPeople: searchPeopleFn,
       startSession,
       clientReady,
@@ -321,7 +328,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       forceRunoff,
       resetSession,
     }),
-    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession],
+    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, setSolo, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession],
   );
 
   return <RoomCtx.Provider value={api}>{children}</RoomCtx.Provider>;

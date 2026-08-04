@@ -153,6 +153,13 @@ export type RoomStateDTO = {
 
 export type PersonResult = { id: number; name: string; movieCount: number };
 
+// ---- REST (outside the socket protocol) -----------------------------------
+// Backs the home screen's poster wall + title count, which render before a
+// room exists and so can't ride the socket connection. Read-only, sourced
+// entirely from the local ingest cache — never a per-request Plex call
+// (CLAUDE.md invariant #5).
+export type LibrarySummaryDTO = { totalTitles: number; posterIds: string[] };
+
 export const ERROR_CODES = [
   "ERR_ROOM_LOCKED",
   "ERR_NOT_HOST",
@@ -176,6 +183,11 @@ export type ClientToServerEvents = {
   // multi-select with its own aggregation mode.
   "lobby:genres": (payload: { categories: CategoryId[] }) => void;
   "lobby:genreMode": (payload: { mode: GenreMode }) => void;
+  // Addition beyond the literal §4 table — solo is no longer fixed at
+  // `room:create`; the host can flip it from the lobby once they know who
+  // actually showed up (mirrors why filters stay host-editable per PROTOCOL's
+  // flow note). Host only, LOBBY only.
+  "lobby:solo": (payload: { solo: boolean }) => void;
   "people:search": (payload: { q: string; role: "DIRECTOR" | "ACTOR" }) => void;
   "session:start": (payload: Record<string, never>, cb?: (res: { ok: true } | { error: ErrorCode; message?: string }) => void) => void;
   "client:ready": (payload: { deckHash: string }) => void;
@@ -204,6 +216,9 @@ export type ServerToClientEvents = {
   // Live-update broadcast for a mid-lobby mode toggle — room:state covers the
   // join/rejoin snapshot, this covers everyone already connected.
   "lobby:genreMode": (payload: { mode: GenreMode }) => void;
+  // Live-update broadcast mirroring lobby:genreMode above, for the same
+  // reason: room:state covers join/rejoin, this covers everyone already in.
+  "lobby:solo": (payload: { solo: boolean }) => void;
   // Addition: lets clients show "N people have picked" without attributing
   // picks to individuals (deliberately no per-user breakdown on the wire).
   "lobby:genreProgress": (payload: { picked: number; total: number }) => void;
