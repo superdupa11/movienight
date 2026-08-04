@@ -14,7 +14,7 @@ services:
 
       # App
       PORT: "8080"
-      PUBLIC_URL: "https://movie.walztech.net"   # used to build the join QR
+      PUBLIC_URL: "https://tinder.walztech.net"   # used to build the join QR
       DB_PATH: "/data/movienight.db"
       ART_CACHE_DIR: "/data/art"
       INGEST_CRON: "0 4 * * *"
