@@ -49,7 +49,7 @@ export default function Lobby() {
       <header className="sticky top-0 z-20 -mx-4 flex flex-col gap-3 bg-ink-950/95 px-4 pb-3 pt-6 ring-1 ring-white/5 backdrop-blur">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">Binger</h1>
+            <h1 className="text-2xl font-bold">binger</h1>
             <p className="text-sm text-white/50">{connectedCount} in the room</p>
           </div>
           <button

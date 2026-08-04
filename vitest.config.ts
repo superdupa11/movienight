@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     root: ".",
-    include: ["src/server/**/*.test.ts"],
+    include: ["src/server/**/*.test.ts", "src/client/**/*.test.ts"],
     environment: "node",
     env: {
       PLEX_URL: "http://test-plex.invalid:32400",

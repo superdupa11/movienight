@@ -126,14 +126,14 @@ export default function Landing() {
             <span className="h-[7px] w-[7px] rounded-full bg-white/[.22]" />
           </div>
           <h1
-            className="mt-1 text-center font-display uppercase leading-[.86] tracking-[.04em]"
+            className="mt-1 text-center font-sans font-bold leading-[.9] tracking-[-.02em]"
             style={{
-              fontSize: "clamp(48px, 15vw, 62px)",
-              WebkitTextStroke: "1.25px rgba(0,0,0,.8)",
+              fontSize: "clamp(44px, 14vw, 58px)",
+              WebkitTextStroke: "1px rgba(0,0,0,.8)",
               textShadow: "0 2px 14px rgba(0,0,0,.5)",
             }}
           >
-            Binger
+            binger
           </h1>
           <p
             className="text-center font-mono text-[10px] tracking-[.22em] text-white/70"
