@@ -1,4 +1,4 @@
-# Movie Night — Room State Machine & WebSocket Protocol
+# Binger — Room State Machine & WebSocket Protocol
 
 Unanimous-match, self-paced (no timer). Server is authoritative for all state;
 clients render snapshots and emit intents.

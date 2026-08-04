@@ -109,7 +109,7 @@ export default function VotingDeck() {
 
       <div className="relative mb-3.5 flex items-center justify-between font-mono text-[11px] font-medium tracking-[.16em] text-white/40">
         <span>
-          MOVIE NIGHT · ROOM {state.code}
+          BINGER · ROOM {state.code}
         </span>
         <span>
           <span className="text-white/40">{String(index + 1).padStart(2, "0")}</span>

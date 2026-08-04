@@ -45,7 +45,7 @@ async function main() {
   startIngestScheduler(db);
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
-  app.log.info(`Movie Night listening on :${config.port}`);
+  app.log.info(`Binger listening on :${config.port}`);
 }
 
 main().catch((err) => {

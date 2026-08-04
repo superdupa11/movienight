@@ -1,4 +1,4 @@
-# Movie Night — Build & Deploy
+# Binger — Build & Deploy
 
 ## 1. Claude Code on the Mac mini
 

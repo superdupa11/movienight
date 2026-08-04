@@ -94,7 +94,7 @@ export default function Landing() {
   }
 
   const ctaLabel = mode === "join" ? "Join room" : "Create room";
-  const ctaHint = mode === "join" ? "ASK THE HOST FOR THE FOUR LETTERS" : "SHARE THE CODE OR THE QR NEXT";
+  const ctaHint = mode === "join" ? "ASK THE HOST FOR THE CODE" : "SHARE THE CODE OR THE QR NEXT";
   const ctaDisabled = busy || (mode === "join" && code.length < 4);
 
   const cells = Array.from({ length: 4 }, (_, i) => {
@@ -133,7 +133,7 @@ export default function Landing() {
               textShadow: "0 2px 14px rgba(0,0,0,.5)",
             }}
           >
-            Movie Night
+            Binger
           </h1>
           <p
             className="text-center font-mono text-[10px] tracking-[.22em] text-white/70"

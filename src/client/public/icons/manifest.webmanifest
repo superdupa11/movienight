@@ -1,6 +1,6 @@
 {
-  "name": "Movie Night",
-  "short_name": "Movie Night",
+  "name": "Binger",
+  "short_name": "Binger",
   "description": "Swipe together, agree on tonight's movie.",
   "start_url": "/",
   "display": "standalone",

@@ -1,4 +1,4 @@
-# Movie Night
+# Binger
 
 Self-hosted web app for picking a movie by group vote against a Plex library.
 Runs as a single Docker container on Unraid.
