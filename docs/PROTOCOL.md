@@ -454,7 +454,113 @@ per-screen player list, since RESOLVED/MATCHED screens don't render one.
 
 ---
 
-## 7. Suggested Wire Setup
+## 7. Casting to a Plex Client ("Open on Plex")
+
+Host-only action from the reveal screen (`RESOLVED`): launch Plex on a
+configured TV and cue the matched/runoff-winning title. Single hardcoded TV
+for now (`SAMSUNG_TV_HOST` env var) — no device picker, since there's nothing
+to pick between yet. The existing `plexUrl` deep link (§6) stays as the
+default/fallback affordance; this is additive.
+
+Everything below was verified against a real Samsung TV + PMS, not assumed —
+the exact requests differ from what the general shape of "Plex remote control"
+suggests, in ways that would have been wrong to just guess (see the two
+`playOnDevice` gotchas below).
+
+### Sequence
+
+1. **Launch the app.** Samsung's *local REST API* — `POST
+   https://{tvHost}:8002/api/v2/applications/{plexAppId}` — not the WebSocket
+   remote-control API. `ed.apps.launch` over WebSocket silently no-ops on this
+   TV's firmware; REST is what actually works. The TV serves a self-signed
+   cert on its local API; trust comes from being on the LAN, not from cert
+   validation.
+2. **Wait for Plex to register.** Poll PMS `GET /clients` for a client with
+   `playback` in `protocolCapabilities`. In the normal case (already signed
+   in) this takes a few seconds. If nothing shows up within 15s, broadcast
+   `plex:castStatus: WAITING_FOR_SIGNIN` — the Plex app likely needs a PIN
+   login (plex.tv/link), which is not auto-solved (see callout below). Give up
+   after 120s total with `plex:castStatus: ERROR`.
+3. **Cue the title**, once a client appears — see `playOnDevice` below.
+
+### `playOnDevice`: two non-obvious requirements
+
+Found only by testing against the real client, not documented anywhere:
+
+- **This client reports its own address as `127.0.0.1`.** ("Plex for
+  Samsung"'s `/clients` entry — not a proxy artifact, just what it announces.)
+  Commands must be proxied through PMS using the
+  `X-Plex-Target-Client-Identifier` header, never sent to the client's
+  self-reported address directly.
+- **The client rejects the account's own token on this endpoint.** It needs a
+  scoped, single-use "delegation" token minted just for this call: `GET
+  /security/token?type=delegation&scope=all` on PMS, using the normal account
+  token, returns `{ token: "transient-..." }`. *That* token — not
+  `X-Plex-Token` — goes on the `playMedia` call.
+
+Full recipe:
+
+```
+1. GET  {pms}/security/token?type=delegation&scope=all&X-Plex-Token={account token}
+   -> delegationToken
+
+2. POST {pms}/playQueues?type=video
+        &uri=server://{pmsMachineIdentifier}/com.plexapp.plugins.library/library/metadata/{ratingKey}
+        &X-Plex-Token={account token}
+   -> playQueueID
+
+3. GET  {pms}/player/playback/playMedia
+        ?key=/library/metadata/{ratingKey}
+        &machineIdentifier={pmsMachineIdentifier}&address={pmsHost}&port={pmsPort}&protocol=http
+        &type=video&providerIdentifier=com.plexapp.plugins.library
+        &containerKey=/playQueues/{playQueueID}?own=1&window=100
+        &commandID={n}&token={delegationToken}
+   Header: X-Plex-Target-Client-Identifier: {client machineIdentifier}
+```
+
+A bare `key=` without a `containerKey` pointing at a real PlayQueue gets a 400
+from the client — real Plex clients always play from a queue, even for a
+single item.
+
+### The PIN sign-in gap is deliberate, not a TODO
+
+Plex TV apps authenticate via a device-linking flow (a 4-character code +
+plex.tv/link), not the account token. If the TV's Plex app is ever signed
+out, `castToTv` will sit in `WAITING_FOR_SIGNIN` until someone completes that
+manually and the client registers, or it times out. This was investigated and
+deliberately not automated: it's plausible the server's own admin token could
+complete the link programmatically (mirroring what a human does at
+plex.tv/link), but the PIN screen likely exists specifically so a leaked
+token can't silently authorize new devices — bypassing it wasn't something to
+assume our way past. Manual resolution, with a generous wait window, is the
+correct behavior here, not a gap to close later.
+
+### Events
+
+| Event | Direction | Payload | Valid in | Notes |
+|---|---|---|---|---|
+| `plex:openOnTv` | client → server | `{}` | `RESOLVED` | Host only. Server casts `result.movie` — never a client-supplied id (invariant #2) |
+| `plex:castStatus` | server → client | `{ state: 'LAUNCHING' \| 'WAITING_FOR_SIGNIN' \| 'PLAYING' \| 'ERROR', message?: string }` | — | Broadcast to the room, not just the host — matches `match:found`'s shared-ceremony framing |
+
+### What was deliberately left out (YAGNI, not forgotten)
+
+- **Waking the TV from standby.** Extensively investigated — Wake-on-LAN
+  does not work on this TV/network despite exhausting every reasonable
+  packet variant, and the working local mechanism (used by the SmartThings
+  app) could not be replicated without either a Samsung account-level cloud
+  dependency or unconfirmed BLE reverse-engineering. The pragmatic fix is an
+  IR blaster (Broadlink RM4 mini or similar) replaying the TV remote's
+  power-on code — not yet implemented. `castToTv` assumes the TV is already
+  on.
+- **A device picker.** There's exactly one configured TV
+  (`SAMSUNG_TV_HOST`). `plex:openOnTv` takes no target and `playOnDevice`
+  just uses the first client with `playback` capability. A `plex:devices` /
+  device-list UI is real future work, not implemented, if a second TV shows
+  up — building it now against a single device would be speculative.
+
+---
+
+## 8. Suggested Wire Setup
 
 - `socket.io` for automatic reconnect + room broadcast semantics. Plain `ws` is
   fine but you'll rewrite reconnect backoff yourself.

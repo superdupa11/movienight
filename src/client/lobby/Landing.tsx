@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { LibrarySummaryDTO } from "../../shared/types";
 import { useRoom } from "../shared/RoomContext";
+import Devices from "./Devices";
 import ScanQR from "./ScanQR";
 
 const prefersReducedMotion =
@@ -47,6 +48,7 @@ export default function Landing() {
   const [soloBusy, setSoloBusy] = useState(false);
   const [soloError, setSoloError] = useState<string>();
   const [scanning, setScanning] = useState(false);
+  const [managingDevices, setManagingDevices] = useState(false);
 
   function switchMode(next: "create" | "join") {
     setMode(next);
@@ -244,6 +246,13 @@ export default function Landing() {
           </div>
           {soloError && <p className="text-center text-[11px] text-no">{soloError}</p>}
           <LibraryStatus />
+          <button
+            type="button"
+            onClick={() => setManagingDevices(true)}
+            className="text-center font-mono text-[10px] tracking-[.18em] text-white/30 underline decoration-white/20 underline-offset-2"
+          >
+            MANAGE DEVICES
+          </button>
         </div>
       </div>
 
@@ -256,6 +265,7 @@ export default function Landing() {
           }}
         />
       )}
+      {managingDevices && <Devices onClose={() => setManagingDevices(false)} />}
     </div>
   );
 }

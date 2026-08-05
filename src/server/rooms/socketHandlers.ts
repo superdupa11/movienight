@@ -175,6 +175,13 @@ export function registerSocketHandlers(io: AppServer, db: Database.Database): Ro
       if (!result.ok) emitError(socket, result.error, result.message);
     });
 
+    socket.on("plex:openOnTv", () => {
+      const room = roomFor(socket);
+      if (!room || !socket.data.userId) return;
+      const result = room.openOnTv(socket.data.userId);
+      if (!result.ok) emitError(socket, result.error, result.message);
+    });
+
     socket.on("disconnect", () => {
       const { userId, roomCode } = socket.data;
       if (userId && roomCode) roomManager.get(roomCode)?.disconnectPlayer(userId);

@@ -160,6 +160,14 @@ export type PersonResult = { id: number; name: string; movieCount: number };
 // (CLAUDE.md invariant #5).
 export type LibrarySummaryDTO = { totalTitles: number; posterIds: string[] };
 
+// Device management for "Open on Plex" (docs/PROTOCOL.md §7) — global config,
+// not room state, so this rides plain REST rather than the socket protocol.
+// Discovery-only for this revision: a device is "whatever Plex client is
+// currently open," identified by Plex's own machineIdentifier. No vendor
+// launch capability is captured or used yet.
+export type TvDevice = { id: string; name: string; plexMachineIdentifier: string; plexProduct: string | null };
+export type ScannedPlexClient = { plexMachineIdentifier: string; plexName: string; plexProduct: string };
+
 export const ERROR_CODES = [
   "ERR_ROOM_LOCKED",
   "ERR_NOT_HOST",
@@ -199,6 +207,11 @@ export type ClientToServerEvents = {
   "runoff:pick": (payload: { movieId: string }) => void;
   "runoff:force": (payload: Record<string, never>) => void;
   "session:reset": (payload: Record<string, never>) => void;
+  // Addition beyond the literal §4/§7 tables — "open on Plex" from the reveal
+  // screen. Host only, RESOLVED only, no payload: the server casts `result.movie`
+  // (invariant #2 — never a client-supplied id), and there's only one configured
+  // TV for now, so there's no device to pick (see docs/PROTOCOL.md §7).
+  "plex:openOnTv": (payload: Record<string, never>) => void;
 };
 
 // ---- Server -> Client events (PROTOCOL §5) --------------------------------
@@ -244,5 +257,10 @@ export type ServerToClientEvents = {
   "runoff:tally": (payload: { picksIn: number; total: number }) => void;
   "runoff:result": (payload: { movie: Movie; votes: number; plexUrl: string }) => void;
   "session:resolved:empty": (payload: { message: string }) => void;
+  // Addition beyond the literal §5/§7 tables — progress for `plex:openOnTv`,
+  // broadcast room-wide (matching match:found's shared-ceremony framing) so
+  // everyone sees "waiting on sign-in" rather than just the host who triggered
+  // it. See docs/PROTOCOL.md §7 for why WAITING_FOR_SIGNIN exists.
+  "plex:castStatus": (payload: { state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string }) => void;
   error: (payload: { code: ErrorCode; message: string }) => void;
 };

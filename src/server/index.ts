@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { getDb } from "./db/index.js";
 import { startIngestScheduler } from "./plex/scheduler.js";
 import { registerArtRoutes } from "./routes/art.js";
+import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
 import { registerLibraryRoutes } from "./routes/library.js";
 import type { AppServer } from "./rooms/ioTypes.js";
@@ -24,6 +25,7 @@ async function main() {
   registerHealthzRoute(app);
   registerArtRoutes(app);
   registerLibraryRoutes(app, db);
+  registerDeviceRoutes(app, db);
 
   await app.register(fastifyStatic, {
     root: CLIENT_DIST,
