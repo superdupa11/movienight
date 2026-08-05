@@ -109,15 +109,27 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Launches Plex on the configured TV, waits for it to register as a
- * controllable client, then cues `ratingKey`. Reports progress via
- * `onStatus` so the caller can broadcast it (Room emits `plex:castStatus`).
+ * Launches Plex on the configured TV, waits for `plexMachineIdentifier`
+ * specifically to register as a controllable client, then cues `ratingKey`.
+ * Reports progress via `onStatus` so the caller can broadcast it (Room emits
+ * `plex:castStatus`).
+ *
+ * Matching a specific machineIdentifier — not just "the first playable
+ * client" — matters as soon as more than one Plex client is on the network:
+ * an earlier version picked whichever client Plex's `/clients` happened to
+ * list first, which silently targeted the wrong TV (or both, via a
+ * duplicate-registration quirk we saw) once a second TV was on. See
+ * docs/PROTOCOL.md §7.
  *
  * Deliberately does not attempt to solve a Plex PIN sign-in screen — if the
  * app isn't already signed in, the client won't register within the grace
  * window, and WAITING_FOR_SIGNIN tells the host to go complete it manually.
  */
-export async function castToTv(ratingKey: string, onStatus: (status: CastStatus) => void): Promise<void> {
+export async function castToTv(
+  plexMachineIdentifier: string,
+  ratingKey: string,
+  onStatus: (status: CastStatus) => void,
+): Promise<void> {
   onStatus({ state: "LAUNCHING" });
   try {
     await launchPlexApp();
@@ -130,7 +142,7 @@ export async function castToTv(ratingKey: string, onStatus: (status: CastStatus)
   let device: PlexDevice | undefined;
   let flaggedSignIn = false;
   while (Date.now() - start < CAST_TIMEOUT_MS) {
-    device = (await listPlayers()).find((d) => d.canPlay);
+    device = (await listPlayers()).find((d) => d.id === plexMachineIdentifier && d.canPlay);
     if (device) break;
     if (!flaggedSignIn && Date.now() - start > LAUNCH_GRACE_MS) {
       flaggedSignIn = true;

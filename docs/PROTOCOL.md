@@ -522,6 +522,28 @@ A bare `key=` without a `containerKey` pointing at a real PlayQueue gets a 400
 from the client — real Plex clients always play from a queue, even for a
 single item.
 
+### 7.1 Targeting the right client — the `tv_device` table
+
+An earlier version of `castToTv` picked whichever client `listPlayers()`
+returned first with `playback` in its capabilities — reasonable-looking, and
+correct as long as exactly one Plex client was ever on the network at once,
+which was true for every test that night. It broke the first time a second
+TV (a different physical Samsung, "TV 2024") was also on with Plex open:
+`/clients` then returned multiple entries, in an order this app never
+controlled, and the wrong TV — or via a duplicate-registration quirk we saw
+in PMS's own response (the same physical client listed twice, once via PMS's
+IP and once via `127.0.0.1`), seemingly both — ended up playing.
+
+The fix: `castToTv` takes a specific `plexMachineIdentifier` and matches on
+it exactly (`d.id === plexMachineIdentifier && d.canPlay`), never "first
+match." That identifier comes from the `tv_device` table (§7's device
+management, previously discovery-only/unwired) — `Room.openOnTv` looks up
+`listDevices(db)[0]` and passes its `plexMachineIdentifier` through. Whoever
+sets `SAMSUNG_TV_HOST` (for launching) is expected to also save that same
+physical TV via Manage Devices (for Plex-side targeting) — the two aren't
+cross-validated against each other, so a mismatch just means "the app
+launches, casting never finds a match" rather than a wrong-TV mistake.
+
 ### The PIN sign-in gap is deliberate, not a TODO
 
 Plex TV apps authenticate via a device-linking flow (a 4-character code +
@@ -534,6 +556,13 @@ plex.tv/link), but the PIN screen likely exists specifically so a leaked
 token can't silently authorize new devices — bypassing it wasn't something to
 assume our way past. Manual resolution, with a generous wait window, is the
 correct behavior here, not a gap to close later.
+
+In practice this should be rare regardless — a signed-in device's token
+doesn't expire on its own, only on an explicit sign-out, a revoke from the
+Plex account's device list, a factory reset, or a password change. On the
+TV itself, **Plex's own app settings have an "automatic sign-in" option** —
+enabling it is the actual operational fix, since it addresses the cause
+(the TV's session not surviving) rather than the symptom.
 
 ### Events
 
@@ -552,11 +581,14 @@ correct behavior here, not a gap to close later.
   IR blaster (Broadlink RM4 mini or similar) replaying the TV remote's
   power-on code — not yet implemented. `castToTv` assumes the TV is already
   on.
-- **A device picker.** There's exactly one configured TV
-  (`SAMSUNG_TV_HOST`). `plex:openOnTv` takes no target and `playOnDevice`
-  just uses the first client with `playback` capability. A `plex:devices` /
-  device-list UI is real future work, not implemented, if a second TV shows
-  up — building it now against a single device would be speculative.
+- **A device picker.** `plex:openOnTv` takes no target — it always targets
+  the first row in `tv_device` (§7.1). That table only ever has one
+  meaningfully-configured row right now, so there's nothing to pick between
+  yet. A `plex:devices` request/response pair for choosing among several
+  saved devices is real future work, not implemented, if a second TV is ever
+  actually cast to (as opposed to merely sharing the network — see the
+  `d.canPlay` bug note in §7.1) — building a picker UI now would be
+  speculative.
 
 ---
 

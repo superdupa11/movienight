@@ -21,6 +21,7 @@ import { getCategoryOptions, getQualifyingMovieIds } from "../deck/filters.js";
 import { prewarmDeck } from "../deck/prewarm.js";
 import { seededShuffle } from "../deck/shuffle.js";
 import { config } from "../config.js";
+import { listDevices } from "../db/devices.js";
 import { castToTv } from "../plex/playback.js";
 import { plexWebUrl } from "../plex/webLink.js";
 import type { AppServer } from "./ioTypes.js";
@@ -607,19 +608,27 @@ export class Room {
 
   /** Host only, RESOLVED only. Casts `result.movie` — never a client-supplied
    * id (invariant #2). Fires the async cast and returns immediately; progress
-   * comes back via broadcast `plex:castStatus` (see docs/PROTOCOL.md §7). */
+   * comes back via broadcast `plex:castStatus` (see docs/PROTOCOL.md §7).
+   *
+   * Targets the first saved device (§7's "single device for now" scope —
+   * whoever configures `SAMSUNG_TV_HOST` for launching is expected to also
+   * save that same physical TV via Manage Devices for Plex-side targeting;
+   * a mismatch between the two just means "app launches, cast never finds
+   * a match," not a wrong-TV mistake). */
   openOnTv(actorId: string): Result {
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
     if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
     if (!config.tv.samsungHost) return err("ERR_BAD_REQUEST", "No TV configured");
     if (!this.result) return err("ERR_BAD_REQUEST", "Nothing to cast");
+    const device = listDevices(this.db)[0];
+    if (!device) return err("ERR_BAD_REQUEST", "No TV saved — add one via Manage Devices");
 
-    void this.runCast(this.result.movie.id);
+    void this.runCast(device.plexMachineIdentifier, this.result.movie.id);
     return ok();
   }
 
-  private async runCast(ratingKey: string) {
-    await castToTv(ratingKey, (status) => {
+  private async runCast(plexMachineIdentifier: string, ratingKey: string) {
+    await castToTv(plexMachineIdentifier, ratingKey, (status) => {
       this.io.to(this.code).emit("plex:castStatus", status);
     });
   }
@@ -692,7 +701,7 @@ export class Room {
       result: this.result,
       runoffCandidates: this.phase === "RUNOFF" ? this.runoffCandidates : undefined,
       publicUrl: config.publicUrl,
-      tvCastEnabled: !!config.tv.samsungHost,
+      tvCastEnabled: !!config.tv.samsungHost && listDevices(this.db).length > 0,
     };
   }
 
