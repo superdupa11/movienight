@@ -46,8 +46,13 @@ type State = {
   emptyMessage?: string;
   peopleResults: Record<"DIRECTOR" | "ACTOR", { q: string; people: PersonResult[] }>;
   publicUrl?: string;
+  tvCastEnabled: boolean;
   lastError?: { code: ErrorCode; message: string; at: number };
   notice?: { message: string; at: number };
+  // "Open on Plex" TV casting (docs/PROTOCOL.md §7) — undefined until the host
+  // triggers it. Cleared on every new result so a stale status from a prior
+  // round never bleeds into the next reveal.
+  castStatus?: { state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string };
 };
 
 const initialState: State = {
@@ -64,6 +69,7 @@ const initialState: State = {
   warmProgress: { done: 0, total: 0 },
   progress: {},
   peopleResults: { DIRECTOR: { q: "", people: [] }, ACTOR: { q: "", people: [] } },
+  tvCastEnabled: false,
 };
 
 type Action =
@@ -87,6 +93,7 @@ type Action =
   | { type: "RUNOFF_TALLY"; picksIn: number; total: number }
   | { type: "RUNOFF_RESULT"; movie: Movie; votes: number; plexUrl: string }
   | { type: "RESOLVED_EMPTY"; message: string }
+  | { type: "CAST_STATUS"; state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string }
   | { type: "ERROR"; code: ErrorCode; message: string }
   | { type: "RESET_LOCAL" };
 
@@ -117,6 +124,7 @@ function reducer(state: State, action: Action): State {
         result: action.dto.result,
         runoffCandidates: action.dto.runoffCandidates,
         publicUrl: action.dto.publicUrl,
+        tvCastEnabled: action.dto.tvCastEnabled,
       };
     case "PLAYER_JOINED":
       if (state.players.some((p) => p.id === action.id)) return state;
@@ -159,19 +167,22 @@ function reducer(state: State, action: Action): State {
         deck: action.movies,
         progress: Object.fromEntries(state.players.map((p) => [p.id, { cursor: 0, total: action.movies.length }])),
         result: undefined,
+        castStatus: undefined,
       };
     case "PROGRESS":
       return { ...state, progress: { ...state.progress, [action.id]: { cursor: action.cursor, total: action.total } } };
     case "MATCH_FOUND":
-      return { ...state, phase: "MATCHED", result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl } };
+      return { ...state, phase: "MATCHED", result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl }, castStatus: undefined };
     case "RUNOFF_START":
       return { ...state, phase: "RUNOFF", runoffCandidates: action.candidates, runoffTally: { picksIn: 0, total: state.players.length } };
     case "RUNOFF_TALLY":
       return { ...state, runoffTally: { picksIn: action.picksIn, total: action.total } };
     case "RUNOFF_RESULT":
-      return { ...state, phase: "RESOLVED", result: { movie: action.movie, via: "runoff", votes: action.votes, plexUrl: action.plexUrl } };
+      return { ...state, phase: "RESOLVED", result: { movie: action.movie, via: "runoff", votes: action.votes, plexUrl: action.plexUrl }, castStatus: undefined };
     case "RESOLVED_EMPTY":
       return { ...state, phase: "RESOLVED", result: undefined, emptyMessage: action.message };
+    case "CAST_STATUS":
+      return { ...state, castStatus: { state: action.state, message: action.message } };
     case "ERROR":
       return { ...state, lastError: { code: action.code, message: action.message, at: Date.now() } };
     case "RESET_LOCAL":
@@ -200,6 +211,7 @@ type RoomApi = {
   runoffPick: (movieId: string) => void;
   forceRunoff: () => void;
   resetSession: () => void;
+  openOnTv: () => void;
 };
 
 const RoomCtx = createContext<RoomApi | undefined>(undefined);
@@ -230,6 +242,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("runoff:tally", (p) => dispatch({ type: "RUNOFF_TALLY", ...p }));
     socket.on("runoff:result", (p) => dispatch({ type: "RUNOFF_RESULT", ...p }));
     socket.on("session:resolved:empty", (p) => dispatch({ type: "RESOLVED_EMPTY", message: p.message }));
+    socket.on("plex:castStatus", (p) => dispatch({ type: "CAST_STATUS", ...p }));
     socket.on("error", (p) => dispatch({ type: "ERROR", ...p }));
 
     const stored = loadSession();
@@ -316,6 +329,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const runoffPick = useCallback((movieId: string) => socket.emit("runoff:pick", { movieId }), []);
   const forceRunoff = useCallback(() => socket.emit("runoff:force", {}), []);
   const resetSession = useCallback(() => socket.emit("session:reset", {}), []);
+  const openOnTv = useCallback(() => socket.emit("plex:openOnTv", {}), []);
 
   const api = useMemo<RoomApi>(
     () => ({
@@ -337,8 +351,9 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       runoffPick,
       forceRunoff,
       resetSession,
+      openOnTv,
     }),
-    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, setSolo, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession],
+    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, setSolo, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession, openOnTv],
   );
 
   return <RoomCtx.Provider value={api}>{children}</RoomCtx.Provider>;

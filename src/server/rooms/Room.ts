@@ -692,6 +692,7 @@ export class Room {
       result: this.result,
       runoffCandidates: this.phase === "RUNOFF" ? this.runoffCandidates : undefined,
       publicUrl: config.publicUrl,
+      tvCastEnabled: !!config.tv.samsungHost,
     };
   }
 

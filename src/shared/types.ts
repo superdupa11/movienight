@@ -149,6 +149,10 @@ export type RoomStateDTO = {
   result?: { movie: Movie; via: "match" | "runoff"; idx?: number; plexUrl: string };
   runoffCandidates?: { movie: Movie; yesCount: number }[];
   publicUrl: string;
+  // Addition beyond the literal §2 table — lets the reveal screen decide
+  // whether to offer "Open on TV" at all (PROTOCOL §7) instead of showing a
+  // button that's guaranteed to fail with ERR_BAD_REQUEST when unconfigured.
+  tvCastEnabled: boolean;
 };
 
 export type PersonResult = { id: number; name: string; movieCount: number };

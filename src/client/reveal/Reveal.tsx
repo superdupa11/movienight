@@ -20,10 +20,20 @@ const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 const easeOut = (x: number) => 1 - Math.pow(1 - clamp01(x), 3);
 const easeIn = (x: number) => Math.pow(clamp01(x), 2.4);
 
+const CAST_LABEL = {
+  LAUNCHING: "Opening…",
+  WAITING_FOR_SIGNIN: "Check the TV…",
+  PLAYING: "Playing on TV",
+  ERROR: "Open on TV",
+} as const;
+
 export default function Reveal() {
-  const { state, resetSession, leaveRoom } = useRoom();
+  const { state, resetSession, leaveRoom, openOnTv } = useRoom();
   const result = state.result;
   const isHost = state.you?.id === state.hostId;
+  const castStatus = state.castStatus;
+  const castBusy = castStatus?.state === "LAUNCHING" || castStatus?.state === "WAITING_FOR_SIGNIN";
+  const showCastButton = isHost && state.tvCastEnabled;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(() => ({
@@ -169,15 +179,26 @@ export default function Reveal() {
         )}
 
         <div className="mt-[26px] flex gap-2.5">
-          <a
-            href={result.plexUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="flex-1 rounded-[14px] py-[15px] text-center text-sm font-bold text-[#08080b]"
-            style={{ background: "#fff" }}
-          >
-            Open in Plex
-          </a>
+          {showCastButton ? (
+            <button
+              onClick={openOnTv}
+              disabled={castBusy}
+              className="flex-1 rounded-[14px] py-[15px] text-center text-sm font-bold text-[#08080b] disabled:opacity-70"
+              style={{ background: "#fff" }}
+            >
+              {castStatus ? CAST_LABEL[castStatus.state] : "Open on TV"}
+            </button>
+          ) : (
+            <a
+              href={result.plexUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex-1 rounded-[14px] py-[15px] text-center text-sm font-bold text-[#08080b]"
+              style={{ background: "#fff" }}
+            >
+              Open in Plex
+            </a>
+          )}
           {isHost && (
             <button
               onClick={resetSession}
@@ -187,6 +208,19 @@ export default function Reveal() {
             </button>
           )}
         </div>
+        {showCastButton && castStatus?.state === "ERROR" && (
+          <p className="mt-2.5 text-center text-[12px] text-no">{castStatus.message ?? "Couldn't open Plex on the TV."}</p>
+        )}
+        {showCastButton && (
+          <a
+            href={result.plexUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2.5 block text-center text-[12px] text-white/40 underline decoration-white/20 underline-offset-2"
+          >
+            Or open in Plex on this device
+          </a>
+        )}
         {!isHost && (
           <p className="mt-3 text-center text-[13px] text-white/50">Waiting for the host to start a new round…</p>
         )}
