@@ -431,9 +431,26 @@ TV cleanly; the 2:3 poster letterboxes badly full-screen. Poster goes inset as a
 thumbnail beside the title, year, and runtime, which keeps the box art the host
 asked for without fighting the layout.
 
-Two affordances and no more: "Start over" (host only, → `session:reset`) and a
-deep link to the title in Plex. Anything else and people stand around reading
-instead of pressing play.
+Two primary affordances and no more: "Start over" (host only, → `session:reset`)
+and a deep link to the title in Plex. Anything else and people stand around
+reading instead of pressing play.
+
+**Deviation from the literal rule above:** every viewer (host and guests) also
+gets a quiet, secondary "Leave room" control (→ `room:leave`, valid in any
+phase per §4) on the reveal and empty-resolved screens. Once a movie is picked,
+a guest has no reason to keep a session open, and making them wait on the host
+to `session:reset` just to close the tab is a worse experience than the extra
+button. Kept visually subordinate to the two primary actions so it doesn't
+compete with them.
+
+### Leaving after resolution notifies the room
+
+`player:left` (§5) is already broadcast to `all`, not just the host — that's
+what a client uses to drive a transient "Guest 2 left the room" notice. This
+matters most right after resolution: the host is choosing whether to
+`session:reset`, and losing a player changes who's around for the next round.
+Surface it as a short-lived, room-wide banner rather than folding it into a
+per-screen player list, since RESOLVED/MATCHED screens don't render one.
 
 ---
 

@@ -1,7 +1,7 @@
 import { useRoom } from "../shared/RoomContext";
 
 export default function EmptyResolved() {
-  const { state, resetSession } = useRoom();
+  const { state, resetSession, leaveRoom } = useRoom();
   const isHost = state.you?.id === state.hostId;
 
   return (
@@ -16,6 +16,9 @@ export default function EmptyResolved() {
       ) : (
         <p className="text-sm text-white/50">Waiting for the host to start a new round…</p>
       )}
+      <button onClick={leaveRoom} className="text-sm text-white/40 transition hover:text-white/60">
+        Leave room
+      </button>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import VotingDeck from "./voting/VotingDeck";
 import Runoff from "./reveal/Runoff";
 import Reveal from "./reveal/Reveal";
 import EmptyResolved from "./reveal/EmptyResolved";
+import Toast from "./shared/Toast";
 import { useRoom } from "./shared/RoomContext";
 
 export default function App() {
@@ -14,20 +15,34 @@ export default function App() {
     return <Landing />;
   }
 
+  let screen;
   switch (state.phase) {
     case "LOBBY":
-      return <Lobby />;
+      screen = <Lobby />;
+      break;
     case "BUILDING":
-      return <BuildingScreen />;
+      screen = <BuildingScreen />;
+      break;
     case "VOTING":
-      return <VotingDeck />;
+      screen = <VotingDeck />;
+      break;
     case "RUNOFF":
-      return <Runoff />;
+      screen = <Runoff />;
+      break;
     case "MATCHED":
-      return <Reveal />;
+      screen = <Reveal />;
+      break;
     case "RESOLVED":
-      return state.result ? <Reveal /> : <EmptyResolved />;
+      screen = state.result ? <Reveal /> : <EmptyResolved />;
+      break;
     default:
-      return <Landing />;
+      screen = <Landing />;
   }
+
+  return (
+    <>
+      <Toast />
+      {screen}
+    </>
+  );
 }

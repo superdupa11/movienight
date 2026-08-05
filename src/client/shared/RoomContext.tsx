@@ -47,6 +47,7 @@ type State = {
   peopleResults: Record<"DIRECTOR" | "ACTOR", { q: string; people: PersonResult[] }>;
   publicUrl?: string;
   lastError?: { code: ErrorCode; message: string; at: number };
+  notice?: { message: string; at: number };
 };
 
 const initialState: State = {
@@ -69,7 +70,7 @@ type Action =
   | { type: "CONNECTING" }
   | { type: "JOINED"; dto: import("../../shared/types").RoomStateDTO }
   | { type: "PLAYER_JOINED"; id: string; name: string }
-  | { type: "PLAYER_LEFT"; id: string }
+  | { type: "PLAYER_LEFT"; id: string; reason: "left" | "timeout" | "kicked" }
   | { type: "PLAYER_PRESENCE"; id: string; connected: boolean }
   | { type: "PEOPLE_RESULTS"; q: string; role: "DIRECTOR" | "ACTOR"; people: PersonResult[] }
   | { type: "CATEGORIES"; categories: CategoryOption[] }
@@ -120,8 +121,17 @@ function reducer(state: State, action: Action): State {
     case "PLAYER_JOINED":
       if (state.players.some((p) => p.id === action.id)) return state;
       return { ...state, players: [...state.players, { id: action.id, name: action.name, connected: true, isHost: false, cursor: 0 }] };
-    case "PLAYER_LEFT":
-      return { ...state, players: state.players.filter((p) => p.id !== action.id) };
+    case "PLAYER_LEFT": {
+      // Look up the name before filtering — it's gone from the roster after this.
+      const departed = state.players.find((p) => p.id === action.id);
+      const label = departed?.name ?? "A player";
+      const verb = action.reason === "timeout" ? "lost connection" : action.reason === "kicked" ? "was removed" : "left the room";
+      return {
+        ...state,
+        players: state.players.filter((p) => p.id !== action.id),
+        notice: { message: `${label} ${verb}`, at: Date.now() },
+      };
+    }
     case "PLAYER_PRESENCE":
       return { ...state, players: state.players.map((p) => (p.id === action.id ? { ...p, connected: action.connected } : p)) };
     case "PEOPLE_RESULTS":
@@ -203,7 +213,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.connect();
 
     socket.on("player:joined", (p) => dispatch({ type: "PLAYER_JOINED", ...p }));
-    socket.on("player:left", (p) => dispatch({ type: "PLAYER_LEFT", id: p.id }));
+    socket.on("player:left", (p) => dispatch({ type: "PLAYER_LEFT", id: p.id, reason: p.reason }));
     socket.on("player:presence", (p) => dispatch({ type: "PLAYER_PRESENCE", ...p }));
     socket.on("people:results", (p) => dispatch({ type: "PEOPLE_RESULTS", ...p }));
     socket.on("lobby:categories", (categories) => dispatch({ type: "CATEGORIES", categories }));

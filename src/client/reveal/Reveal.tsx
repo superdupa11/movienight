@@ -21,7 +21,7 @@ const easeOut = (x: number) => 1 - Math.pow(1 - clamp01(x), 3);
 const easeIn = (x: number) => Math.pow(clamp01(x), 2.4);
 
 export default function Reveal() {
-  const { state, resetSession } = useRoom();
+  const { state, resetSession, leaveRoom } = useRoom();
   const result = state.result;
   const isHost = state.you?.id === state.hostId;
 
@@ -190,6 +190,12 @@ export default function Reveal() {
         {!isHost && (
           <p className="mt-3 text-center text-[13px] text-white/50">Waiting for the host to start a new round…</p>
         )}
+        <button
+          onClick={leaveRoom}
+          className="mt-3 w-full text-center text-[13px] text-white/40 transition hover:text-white/60"
+        >
+          Leave room
+        </button>
       </div>
 
       <MatchCard eyebrow={titleCardEyebrow} opacity={introOpacity} scale={introScale} eyebrowOpacity={introEyebrowOpacity} />

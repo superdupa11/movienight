@@ -4,13 +4,13 @@ import { useRoom } from "../shared/RoomContext";
 
 type Props = {
   role: "DIRECTOR" | "ACTOR";
-  label: string;
+  placeholder: string;
   selected: { id: number; name: string }[];
   onAdd: (person: PersonResult) => void;
   onRemove: (id: number) => void;
 };
 
-export default function PeopleTypeahead({ role, label, selected, onAdd, onRemove }: Props) {
+export default function PeopleTypeahead({ role, placeholder, selected, onAdd, onRemove }: Props) {
   const { searchPeople, state } = useRoom();
   const [q, setQ] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -26,15 +26,14 @@ export default function PeopleTypeahead({ role, label, selected, onAdd, onRemove
   const visibleResults = results.q === q.trim() ? results.people : [];
 
   return (
-    <div>
-      <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-white/50">{label}</label>
+    <div className="min-w-0 flex-1">
       {selected.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <div className="mb-1.5 flex flex-wrap gap-1.5">
           {selected.map((s) => (
             <button
               key={s.id}
               onClick={() => onRemove(s.id)}
-              className="rounded-full bg-white/15 px-3 py-1 text-xs text-white ring-1 ring-white/20"
+              className="rounded-full bg-white/15 px-2.5 py-1 text-xs text-white ring-1 ring-white/20"
             >
               {s.name} ✕
             </button>
@@ -44,11 +43,11 @@ export default function PeopleTypeahead({ role, label, selected, onAdd, onRemove
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder={`Search ${label.toLowerCase()}…`}
-        className="w-full rounded-lg bg-ink-800 px-3 py-2 text-sm outline-none ring-1 ring-white/10 focus:ring-white/30"
+        placeholder={placeholder}
+        className="w-full rounded-[9px] bg-ink-950 px-3 py-2.5 text-[13px] text-white outline-none ring-1 ring-inset ring-white/10 placeholder:text-white/35 focus:ring-white/30"
       />
       {visibleResults.length > 0 && (
-        <div className="mt-1 max-h-40 overflow-y-auto rounded-lg bg-ink-800 ring-1 ring-white/10">
+        <div className="mt-1 max-h-40 overflow-y-auto rounded-lg bg-ink-900 ring-1 ring-white/10">
           {visibleResults
             .filter((r) => !selected.some((s) => s.id === r.id))
             .map((r) => (
