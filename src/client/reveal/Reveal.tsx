@@ -28,12 +28,14 @@ const CAST_LABEL = {
 } as const;
 
 export default function Reveal() {
-  const { state, resetSession, leaveRoom, openOnTv } = useRoom();
+  const { state, resetSession, leaveRoom, openOnTv, selectDevice } = useRoom();
   const result = state.result;
   const isHost = state.you?.id === state.hostId;
   const castStatus = state.castStatus;
   const castBusy = castStatus?.state === "LAUNCHING" || castStatus?.state === "WAITING_FOR_SIGNIN";
   const showCastButton = isHost && state.tvCastEnabled;
+  const pickDevices = state.pickDevices;
+  const picking = showCastButton && !!pickDevices && pickDevices.length > 0;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(() => ({
@@ -178,8 +180,24 @@ export default function Reveal() {
           </p>
         )}
 
-        <div className="mt-[26px] flex gap-2.5">
-          {showCastButton ? (
+        {picking && (
+          <div className="mt-[26px] flex flex-col gap-2">
+            <p className="text-center text-[12px] text-white/50">Multiple TVs are open — pick one</p>
+            {pickDevices!.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => selectDevice(d.id)}
+                className="rounded-[14px] py-[15px] text-center text-sm font-bold text-[#08080b] transition active:scale-[0.98]"
+                style={{ background: "#fff" }}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className={picking ? "mt-2.5 flex gap-2.5" : "mt-[26px] flex gap-2.5"}>
+          {picking ? null : showCastButton ? (
             <button
               onClick={openOnTv}
               disabled={castBusy}
@@ -208,10 +226,10 @@ export default function Reveal() {
             </button>
           )}
         </div>
-        {showCastButton && castStatus?.state === "ERROR" && (
+        {showCastButton && !picking && castStatus?.state === "ERROR" && (
           <p className="mt-2.5 text-center text-[12px] text-no">{castStatus.message ?? "Couldn't open Plex on the TV."}</p>
         )}
-        {showCastButton && (
+        {showCastButton && !picking && (
           <a
             href={result.plexUrl}
             target="_blank"

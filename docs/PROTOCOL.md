@@ -456,10 +456,12 @@ per-screen player list, since RESOLVED/MATCHED screens don't render one.
 
 ## 7. Casting to a Plex Client ("Open on Plex")
 
-Host-only action from the reveal screen (`RESOLVED`): launch Plex on a
-configured TV and cue the matched/runoff-winning title. Single hardcoded TV
-for now (`SAMSUNG_TV_HOST` env var) — no device picker, since there's nothing
-to pick between yet. The existing `plexUrl` deep link (§6) stays as the
+Host-only action from the reveal screen (`RESOLVED`): cue the
+matched/runoff-winning title on a saved Plex client (`tv_device`, managed via
+"Manage Devices"). If exactly one saved device is currently open on the
+network, cast straight to it. If none are open, fall back to launching Plex
+on the configured Samsung TV (`SAMSUNG_TV_HOST` env var) and waiting for it
+to register — see §7.1. The existing `plexUrl` deep link (§6) stays as the
 default/fallback affordance; this is additive.
 
 Everything below was verified against a real Samsung TV + PMS, not assumed —
@@ -534,15 +536,32 @@ controlled, and the wrong TV — or via a duplicate-registration quirk we saw
 in PMS's own response (the same physical client listed twice, once via PMS's
 IP and once via `127.0.0.1`), seemingly both — ended up playing.
 
-The fix: `castToTv` takes a specific `plexMachineIdentifier` and matches on
-it exactly (`d.id === plexMachineIdentifier && d.canPlay`), never "first
-match." That identifier comes from the `tv_device` table (§7's device
-management, previously discovery-only/unwired) — `Room.openOnTv` looks up
-`listDevices(db)[0]` and passes its `plexMachineIdentifier` through. Whoever
-sets `SAMSUNG_TV_HOST` (for launching) is expected to also save that same
-physical TV via Manage Devices (for Plex-side targeting) — the two aren't
-cross-validated against each other, so a mismatch just means "the app
-launches, casting never finds a match" rather than a wrong-TV mistake.
+The fix: every cast targets a specific `plexMachineIdentifier`, matched
+exactly (`d.id === plexMachineIdentifier && d.canPlay`), never "first match."
+Candidates come from the `tv_device` table (Manage Devices) — but which one
+gets used depends on how many saved devices are actually live right now.
+`Room.openOnTv` resolves this in three steps:
+
+1. **Cross-reference.** `listActiveDevices(db)` calls `listPlayers()` and
+   intersects it with saved `tv_device` rows by `plexMachineIdentifier` — a
+   saved device only counts as "active" if it currently shows up in
+   `/clients` with `playback` capability, not merely because it was saved
+   once.
+2. **Exactly one active** → cast directly via `castToActiveDevice` (just
+   `playOnDevice`, no launch/poll — the client's already open).
+3. **More than one active** → broadcast `plex:pickDevice` with the active
+   devices; the host resolves it with `plex:selectDevice { deviceId }`,
+   re-validated server-side against `tv_device` before casting (never a
+   blindly-trusted client value — invariant #2).
+4. **None active** → fall back to the original launch-and-wait flow
+   (`castToTv`): launch Plex on `SAMSUNG_TV_HOST`, poll for it to register,
+   then play. This still assumes `listDevices(db)[0]` is that physical TV —
+   the launch mechanism only knows how to open Plex on the one configured
+   Samsung TV, so whoever sets `SAMSUNG_TV_HOST` is expected to also have
+   saved that same TV as their first device. A mismatch here means "the app
+   launches, casting never finds a match" rather than a wrong-TV mistake —
+   same caveat as before, just narrowed to the zero-active case instead of
+   applying to every cast.
 
 ### The PIN sign-in gap is deliberate, not a TODO
 
@@ -568,7 +587,9 @@ enabling it is the actual operational fix, since it addresses the cause
 
 | Event | Direction | Payload | Valid in | Notes |
 |---|---|---|---|---|
-| `plex:openOnTv` | client → server | `{}` | `RESOLVED` | Host only. Server casts `result.movie` — never a client-supplied id (invariant #2) |
+| `plex:openOnTv` | client → server | `{}` | `RESOLVED` | Host only. Server casts `result.movie` — never a client-supplied id (invariant #2) — and resolves the target device itself (§7.1) |
+| `plex:pickDevice` | server → client | `{ devices: TvDevice[] }` | — | Broadcast when more than one saved device is active at once; only the host acts on it |
+| `plex:selectDevice` | client → server | `{ deviceId: string }` | `RESOLVED` | Host only, follow-up to `plex:pickDevice`. `deviceId` re-validated against `tv_device` server-side |
 | `plex:castStatus` | server → client | `{ state: 'LAUNCHING' \| 'WAITING_FOR_SIGNIN' \| 'PLAYING' \| 'ERROR', message?: string }` | — | Broadcast to the room, not just the host — matches `match:found`'s shared-ceremony framing |
 
 ### What was deliberately left out (YAGNI, not forgotten)
@@ -581,14 +602,12 @@ enabling it is the actual operational fix, since it addresses the cause
   IR blaster (Broadlink RM4 mini or similar) replaying the TV remote's
   power-on code — not yet implemented. `castToTv` assumes the TV is already
   on.
-- **A device picker.** `plex:openOnTv` takes no target — it always targets
-  the first row in `tv_device` (§7.1). That table only ever has one
-  meaningfully-configured row right now, so there's nothing to pick between
-  yet. A `plex:devices` request/response pair for choosing among several
-  saved devices is real future work, not implemented, if a second TV is ever
-  actually cast to (as opposed to merely sharing the network — see the
-  `d.canPlay` bug note in §7.1) — building a picker UI now would be
-  speculative.
+- **Multi-vendor launch.** The zero-active fallback only knows how to launch
+  Plex on one configured Samsung TV (`SAMSUNG_TV_HOST`) — it has no concept
+  of a per-device launch mechanism for other vendors/apps. If a saved device
+  isn't a Samsung TV (or isn't the configured one), "none active" just means
+  the host has to open Plex on it manually before casting works. Teaching
+  every device row how to launch itself is real future work, not implemented.
 
 ---
 

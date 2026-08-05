@@ -22,7 +22,7 @@ import { prewarmDeck } from "../deck/prewarm.js";
 import { seededShuffle } from "../deck/shuffle.js";
 import { config } from "../config.js";
 import { listDevices } from "../db/devices.js";
-import { castToTv } from "../plex/playback.js";
+import { castToActiveDevice, castToTv, listActiveDevices } from "../plex/playback.js";
 import { plexWebUrl } from "../plex/webLink.js";
 import type { AppServer } from "./ioTypes.js";
 import { err, ok, type Result } from "./result.js";
@@ -610,25 +610,70 @@ export class Room {
    * id (invariant #2). Fires the async cast and returns immediately; progress
    * comes back via broadcast `plex:castStatus` (see docs/PROTOCOL.md §7).
    *
-   * Targets the first saved device (§7's "single device for now" scope —
-   * whoever configures `SAMSUNG_TV_HOST` for launching is expected to also
-   * save that same physical TV via Manage Devices for Plex-side targeting;
-   * a mismatch between the two just means "app launches, cast never finds
-   * a match," not a wrong-TV mistake). */
+   * Which physical device gets targeted is resolved asynchronously in
+   * `resolveCast`: exactly one saved device currently active casts directly,
+   * more than one broadcasts `plex:pickDevice` for the host to disambiguate
+   * (see `selectDevice`), and none active falls back to the Samsung
+   * auto-launch path (still assumes `listDevices(db)[0]` is that TV — see
+   * docs/PROTOCOL.md §7.1). */
   openOnTv(actorId: string): Result {
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
     if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
-    if (!config.tv.samsungHost) return err("ERR_BAD_REQUEST", "No TV configured");
     if (!this.result) return err("ERR_BAD_REQUEST", "Nothing to cast");
-    const device = listDevices(this.db)[0];
-    if (!device) return err("ERR_BAD_REQUEST", "No TV saved — add one via Manage Devices");
+    if (listDevices(this.db).length === 0) return err("ERR_BAD_REQUEST", "No TV saved — add one via Manage Devices");
 
-    void this.runCast(device.plexMachineIdentifier, this.result.movie.id);
+    void this.resolveCast(this.result.movie.id);
+    return ok();
+  }
+
+  private async resolveCast(ratingKey: string) {
+    // Immediate feedback before the `listActiveDevices` round-trip to Plex —
+    // without this the cast button sits on "Open on TV" with no visible
+    // change until that lookup resolves. Every branch below either overwrites
+    // this quickly (PLAYING/ERROR/pickDevice) or reinforces it (castToTv's
+    // own LAUNCHING, idempotent).
+    this.io.to(this.code).emit("plex:castStatus", { state: "LAUNCHING" });
+
+    const active = await listActiveDevices(this.db);
+    const [only, ...rest] = active;
+    if (only && rest.length === 0) {
+      await this.runActiveCast(only.plexMachineIdentifier, ratingKey);
+    } else if (active.length > 1) {
+      this.io.to(this.code).emit("plex:pickDevice", { devices: active });
+    } else if (config.tv.samsungHost) {
+      const device = listDevices(this.db)[0];
+      if (!device) return;
+      await this.runCast(device.plexMachineIdentifier, ratingKey);
+    } else {
+      this.io.to(this.code).emit("plex:castStatus", {
+        state: "ERROR",
+        message: "No TV is open — start Plex on a saved device first.",
+      });
+    }
+  }
+
+  /** Host only, RESOLVED only. Follow-up to a `plex:pickDevice` broadcast —
+   * casts to whichever saved device the host chose. `deviceId` is validated
+   * against `tv_device`, never trusted blindly (invariant #2). */
+  selectDevice(actorId: string, deviceId: string): Result {
+    if (actorId !== this.hostId) return err("ERR_NOT_HOST");
+    if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
+    if (!this.result) return err("ERR_BAD_REQUEST", "Nothing to cast");
+    const device = listDevices(this.db).find((d) => d.id === deviceId);
+    if (!device) return err("ERR_BAD_REQUEST", "Unknown device");
+
+    void this.runActiveCast(device.plexMachineIdentifier, this.result.movie.id);
     return ok();
   }
 
   private async runCast(plexMachineIdentifier: string, ratingKey: string) {
     await castToTv(plexMachineIdentifier, ratingKey, (status) => {
+      this.io.to(this.code).emit("plex:castStatus", status);
+    });
+  }
+
+  private async runActiveCast(plexMachineIdentifier: string, ratingKey: string) {
+    await castToActiveDevice(plexMachineIdentifier, ratingKey, (status) => {
       this.io.to(this.code).emit("plex:castStatus", status);
     });
   }
@@ -701,7 +746,7 @@ export class Room {
       result: this.result,
       runoffCandidates: this.phase === "RUNOFF" ? this.runoffCandidates : undefined,
       publicUrl: config.publicUrl,
-      tvCastEnabled: !!config.tv.samsungHost && listDevices(this.db).length > 0,
+      tvCastEnabled: listDevices(this.db).length > 0,
     };
   }
 

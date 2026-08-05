@@ -10,6 +10,7 @@ import type {
   Player,
   PersonResult,
   RoomPhase,
+  TvDevice,
   WarmState,
 } from "../../shared/types";
 import { DEFAULT_FILTERS } from "../../shared/types";
@@ -53,6 +54,10 @@ type State = {
   // triggers it. Cleared on every new result so a stale status from a prior
   // round never bleeds into the next reveal.
   castStatus?: { state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string };
+  // Set when more than one saved device is active at once — the host picks
+  // one via `selectDevice`. Cleared alongside castStatus (a real cast status
+  // means the ambiguity is resolved, one way or another).
+  pickDevices?: TvDevice[];
 };
 
 const initialState: State = {
@@ -94,6 +99,7 @@ type Action =
   | { type: "RUNOFF_RESULT"; movie: Movie; votes: number; plexUrl: string }
   | { type: "RESOLVED_EMPTY"; message: string }
   | { type: "CAST_STATUS"; state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string }
+  | { type: "PICK_DEVICES"; devices: TvDevice[] }
   | { type: "ERROR"; code: ErrorCode; message: string }
   | { type: "RESET_LOCAL" };
 
@@ -168,21 +174,36 @@ function reducer(state: State, action: Action): State {
         progress: Object.fromEntries(state.players.map((p) => [p.id, { cursor: 0, total: action.movies.length }])),
         result: undefined,
         castStatus: undefined,
+        pickDevices: undefined,
       };
     case "PROGRESS":
       return { ...state, progress: { ...state.progress, [action.id]: { cursor: action.cursor, total: action.total } } };
     case "MATCH_FOUND":
-      return { ...state, phase: "MATCHED", result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl }, castStatus: undefined };
+      return {
+        ...state,
+        phase: "MATCHED",
+        result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl },
+        castStatus: undefined,
+        pickDevices: undefined,
+      };
     case "RUNOFF_START":
       return { ...state, phase: "RUNOFF", runoffCandidates: action.candidates, runoffTally: { picksIn: 0, total: state.players.length } };
     case "RUNOFF_TALLY":
       return { ...state, runoffTally: { picksIn: action.picksIn, total: action.total } };
     case "RUNOFF_RESULT":
-      return { ...state, phase: "RESOLVED", result: { movie: action.movie, via: "runoff", votes: action.votes, plexUrl: action.plexUrl }, castStatus: undefined };
+      return {
+        ...state,
+        phase: "RESOLVED",
+        result: { movie: action.movie, via: "runoff", votes: action.votes, plexUrl: action.plexUrl },
+        castStatus: undefined,
+        pickDevices: undefined,
+      };
     case "RESOLVED_EMPTY":
       return { ...state, phase: "RESOLVED", result: undefined, emptyMessage: action.message };
     case "CAST_STATUS":
-      return { ...state, castStatus: { state: action.state, message: action.message } };
+      return { ...state, castStatus: { state: action.state, message: action.message }, pickDevices: undefined };
+    case "PICK_DEVICES":
+      return { ...state, pickDevices: action.devices, castStatus: undefined };
     case "ERROR":
       return { ...state, lastError: { code: action.code, message: action.message, at: Date.now() } };
     case "RESET_LOCAL":
@@ -212,6 +233,7 @@ type RoomApi = {
   forceRunoff: () => void;
   resetSession: () => void;
   openOnTv: () => void;
+  selectDevice: (deviceId: string) => void;
 };
 
 const RoomCtx = createContext<RoomApi | undefined>(undefined);
@@ -243,6 +265,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("runoff:result", (p) => dispatch({ type: "RUNOFF_RESULT", ...p }));
     socket.on("session:resolved:empty", (p) => dispatch({ type: "RESOLVED_EMPTY", message: p.message }));
     socket.on("plex:castStatus", (p) => dispatch({ type: "CAST_STATUS", ...p }));
+    socket.on("plex:pickDevice", (p) => dispatch({ type: "PICK_DEVICES", devices: p.devices }));
     socket.on("error", (p) => dispatch({ type: "ERROR", ...p }));
 
     const stored = loadSession();
@@ -330,6 +353,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const forceRunoff = useCallback(() => socket.emit("runoff:force", {}), []);
   const resetSession = useCallback(() => socket.emit("session:reset", {}), []);
   const openOnTv = useCallback(() => socket.emit("plex:openOnTv", {}), []);
+  const selectDevice = useCallback((deviceId: string) => socket.emit("plex:selectDevice", { deviceId }), []);
 
   const api = useMemo<RoomApi>(
     () => ({
@@ -352,8 +376,30 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       forceRunoff,
       resetSession,
       openOnTv,
+      selectDevice,
     }),
-    [state, createRoom, joinRoom, rejoin, leaveRoom, setFilters, setGenres, setGenreMode, setSolo, searchPeopleFn, startSession, clientReady, castVote, undoVote, cardFlip, runoffPick, forceRunoff, resetSession, openOnTv],
+    [
+      state,
+      createRoom,
+      joinRoom,
+      rejoin,
+      leaveRoom,
+      setFilters,
+      setGenres,
+      setGenreMode,
+      setSolo,
+      searchPeopleFn,
+      startSession,
+      clientReady,
+      castVote,
+      undoVote,
+      cardFlip,
+      runoffPick,
+      forceRunoff,
+      resetSession,
+      openOnTv,
+      selectDevice,
+    ],
   );
 
   return <RoomCtx.Provider value={api}>{children}</RoomCtx.Provider>;

@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ScannedPlexClient, TvDevice } from "../../shared/types.js";
-import { addDevice, listDevices, removeDevice } from "../db/devices.js";
+import { addDevice, listDevices, removeDevice, renameDevice } from "../db/devices.js";
 import { listPlayers } from "../plex/playback.js";
 
 const addDeviceSchema = z.object({
@@ -11,10 +11,15 @@ const addDeviceSchema = z.object({
   plexProduct: z.string().nullable(),
 });
 
+const renameDeviceSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+});
+
 /**
- * Device management for "Open on Plex" (PROTOCOL §7) — discovery-only for
- * this revision. Scanning surfaces whatever Plex client is currently open on
- * the network; there's no vendor-specific setup step here yet.
+ * Device management for "Open on Plex" (PROTOCOL §7). Scanning surfaces
+ * whatever Plex client is currently open on the network; saved devices can
+ * be renamed to something recognizable, and casting targets whichever saved
+ * device is currently active (see Room.openOnTv).
  */
 export function registerDeviceRoutes(app: FastifyInstance, db: Database.Database): void {
   app.get("/api/devices", async (): Promise<TvDevice[]> => listDevices(db));
@@ -31,6 +36,15 @@ export function registerDeviceRoutes(app: FastifyInstance, db: Database.Database
     if (!parsed.success) return reply.code(400).send({ error: "Malformed device" });
     const { name, plexMachineIdentifier, plexProduct } = parsed.data;
     return addDevice(db, name, plexMachineIdentifier, plexProduct);
+  });
+
+  app.patch("/api/devices/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = renameDeviceSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Malformed name" });
+    const device = renameDevice(db, id, parsed.data.name);
+    if (!device) return reply.code(404).send({ error: "Not found" });
+    return device;
   });
 
   app.delete("/api/devices/:id", async (req, reply) => {

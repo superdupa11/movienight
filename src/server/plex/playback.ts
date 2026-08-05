@@ -1,4 +1,6 @@
+import type Database from "better-sqlite3";
 import { config } from "../config.js";
+import { listDevices, type TvDevice } from "../db/devices.js";
 import { launchPlexApp } from "../tv/samsungTv.js";
 
 export type PlexDevice = { id: string; name: string; product: string; canPlay: boolean };
@@ -71,7 +73,7 @@ export async function listPlayers(): Promise<PlexDevice[]> {
  *  - The client rejects the account's own X-Plex-Token on this endpoint. It
  *    needs a scoped, single-use "delegation" token minted just for this call.
  */
-async function playOnDevice(deviceId: string, ratingKey: string): Promise<void> {
+export async function playOnDevice(deviceId: string, ratingKey: string): Promise<void> {
   const pmsId = await serverMachineIdentifier();
 
   const tokenData = await plexFetchJson<{ MediaContainer: { token: string } }>(
@@ -158,6 +160,36 @@ export async function castToTv(
 
   try {
     await playOnDevice(device.id, ratingKey);
+    onStatus({ state: "PLAYING" });
+  } catch (e) {
+    onStatus({ state: "ERROR", message: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/**
+ * Cross-references saved devices (`tv_device`) against Plex's live `/clients`
+ * list — a saved device is "active" only if it's currently present there
+ * with `playback` capability, not just because it was saved once.
+ */
+export async function listActiveDevices(db: Database.Database): Promise<TvDevice[]> {
+  const saved = listDevices(db);
+  if (saved.length === 0) return [];
+  const players = await listPlayers();
+  const activeIds = new Set(players.filter((p) => p.canPlay).map((p) => p.id));
+  return saved.filter((d) => activeIds.has(d.plexMachineIdentifier));
+}
+
+/**
+ * Casts to a device already known to be active (from `listActiveDevices`) —
+ * no launch, no poll, just cue the title directly.
+ */
+export async function castToActiveDevice(
+  plexMachineIdentifier: string,
+  ratingKey: string,
+  onStatus: (status: CastStatus) => void,
+): Promise<void> {
+  try {
+    await playOnDevice(plexMachineIdentifier, ratingKey);
     onStatus({ state: "PLAYING" });
   } catch (e) {
     onStatus({ state: "ERROR", message: e instanceof Error ? e.message : String(e) });

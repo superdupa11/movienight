@@ -213,9 +213,13 @@ export type ClientToServerEvents = {
   "session:reset": (payload: Record<string, never>) => void;
   // Addition beyond the literal §4/§7 tables — "open on Plex" from the reveal
   // screen. Host only, RESOLVED only, no payload: the server casts `result.movie`
-  // (invariant #2 — never a client-supplied id), and there's only one configured
-  // TV for now, so there's no device to pick (see docs/PROTOCOL.md §7).
+  // (invariant #2 — never a client-supplied id) and resolves which saved
+  // device to target itself (see docs/PROTOCOL.md §7.1).
   "plex:openOnTv": (payload: Record<string, never>) => void;
+  // Follow-up to a `plex:pickDevice` broadcast, when more than one saved
+  // device is active at once. Host only, RESOLVED only — `deviceId` is
+  // re-validated against `tv_device` server-side, never trusted blindly.
+  "plex:selectDevice": (payload: { deviceId: string }) => void;
 };
 
 // ---- Server -> Client events (PROTOCOL §5) --------------------------------
@@ -266,5 +270,9 @@ export type ServerToClientEvents = {
   // everyone sees "waiting on sign-in" rather than just the host who triggered
   // it. See docs/PROTOCOL.md §7 for why WAITING_FOR_SIGNIN exists.
   "plex:castStatus": (payload: { state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string }) => void;
+  // Broadcast when more than one saved device is active at once — the host
+  // resolves it with `plex:selectDevice`. Everyone sees it (same
+  // shared-ceremony framing as `plex:castStatus`), but only the host can act.
+  "plex:pickDevice": (payload: { devices: TvDevice[] }) => void;
   error: (payload: { code: ErrorCode; message: string }) => void;
 };

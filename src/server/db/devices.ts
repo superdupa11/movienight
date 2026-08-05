@@ -22,6 +22,13 @@ export function addDevice(db: Database.Database, name: string, plexMachineIdenti
   return row;
 }
 
+export function renameDevice(db: Database.Database, id: string, name: string): TvDevice | undefined {
+  db.prepare("UPDATE tv_device SET name = ? WHERE id = ?").run(name, id);
+  return db
+    .prepare("SELECT id, name, plex_machine_identifier AS plexMachineIdentifier, plex_product AS plexProduct FROM tv_device WHERE id = ?")
+    .get(id) as TvDevice | undefined;
+}
+
 export function removeDevice(db: Database.Database, id: string): void {
   db.prepare("DELETE FROM tv_device WHERE id = ?").run(id);
 }
