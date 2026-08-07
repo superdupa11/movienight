@@ -166,10 +166,17 @@ export type LibrarySummaryDTO = { totalTitles: number; posterIds: string[] };
 
 // Device management for "Open on Plex" (docs/PROTOCOL.md §7) — global config,
 // not room state, so this rides plain REST rather than the socket protocol.
-// Discovery-only for this revision: a device is "whatever Plex client is
-// currently open," identified by Plex's own machineIdentifier. No vendor
-// launch capability is captured or used yet.
-export type TvDevice = { id: string; name: string; plexMachineIdentifier: string; plexProduct: string | null };
+// A device is discovered as "whatever Plex client is currently open,"
+// identified by Plex's own machineIdentifier — Plex never reveals a client's
+// real LAN address (§7's `playOnDevice` gotcha), so `ipAddress` is entered by
+// hand and is what makes a saved device launchable from cold (§7.1).
+export type TvDevice = {
+  id: string;
+  name: string;
+  plexMachineIdentifier: string;
+  plexProduct: string | null;
+  ipAddress: string | null;
+};
 export type ScannedPlexClient = { plexMachineIdentifier: string; plexName: string; plexProduct: string };
 
 export const ERROR_CODES = [
@@ -220,6 +227,10 @@ export type ClientToServerEvents = {
   // device is active at once. Host only, RESOLVED only — `deviceId` is
   // re-validated against `tv_device` server-side, never trusted blindly.
   "plex:selectDevice": (payload: { deviceId: string }) => void;
+  // Cancels a `plex:sleepTimer` ARMED timer for whichever device the room
+  // last cast to. Host only — no payload, since a room only ever has one
+  // cast target armed at a time (see docs/PROTOCOL.md §7.2).
+  "plex:cancelSleepTimer": (payload: Record<string, never>) => void;
 };
 
 // ---- Server -> Client events (PROTOCOL §5) --------------------------------
@@ -274,5 +285,10 @@ export type ServerToClientEvents = {
   // resolves it with `plex:selectDevice`. Everyone sees it (same
   // shared-ceremony framing as `plex:castStatus`), but only the host can act.
   "plex:pickDevice": (payload: { devices: TvDevice[] }) => void;
+  // Progress for the sleep timer (§7.2): armed once a cast reaches PLAYING on
+  // a device with a saved IP, FIRED once it's sent the TV's power-off key,
+  // CANCELLED via `plex:cancelSleepTimer` or a fresh cast superseding it.
+  // Room-wide broadcast, same shared-ceremony framing as `plex:castStatus`.
+  "plex:sleepTimer": (payload: { state: "ARMED" | "FIRED" | "CANCELLED" | "ERROR"; message?: string }) => void;
   error: (payload: { code: ErrorCode; message: string }) => void;
 };

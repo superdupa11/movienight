@@ -11,6 +11,7 @@ export default function Devices({ onClose }: Props) {
   const [addingId, setAddingId] = useState<string>();
   const [editingId, setEditingId] = useState<string>();
   const [editValue, setEditValue] = useState("");
+  const [editIpValue, setEditIpValue] = useState("");
   const [renaming, setRenaming] = useState(false);
 
   async function loadDevices() {
@@ -60,6 +61,7 @@ export default function Devices({ onClose }: Props) {
   function startEditing(device: TvDevice) {
     setEditingId(device.id);
     setEditValue(device.name);
+    setEditIpValue(device.ipAddress ?? "");
   }
 
   async function saveRename(id: string) {
@@ -69,7 +71,7 @@ export default function Devices({ onClose }: Props) {
     await fetch(`/api/devices/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ipAddress: editIpValue.trim() }),
     });
     setRenaming(false);
     setEditingId(undefined);
@@ -134,34 +136,45 @@ export default function Devices({ onClose }: Props) {
         )}
 
         <div className="flex flex-col gap-2">
-          <p className="font-mono text-[10px] tracking-[.18em] text-white/40">SAVED · TAP A NAME TO RENAME</p>
+          <p className="font-mono text-[10px] tracking-[.18em] text-white/40">SAVED · TAP TO EDIT NAME &amp; IP</p>
           {devices.length === 0 && <p className="text-sm text-white/40">No devices yet.</p>}
           {devices.map((d) =>
             editingId === d.id ? (
-              <div key={d.id} className="flex items-center justify-between gap-2 rounded-xl bg-ink-800 px-4 py-3">
+              <div key={d.id} className="flex flex-col gap-2 rounded-xl bg-ink-800 px-4 py-3">
                 <input
                   type="text"
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
                   maxLength={60}
                   autoFocus
-                  className="min-w-0 flex-1 rounded-lg bg-ink-950 px-3 py-1.5 text-sm font-medium text-white ring-1 ring-white/10 focus:outline-none focus:ring-white/30"
+                  placeholder="Name"
+                  className="min-w-0 rounded-lg bg-ink-950 px-3 py-1.5 text-sm font-medium text-white ring-1 ring-white/10 focus:outline-none focus:ring-white/30"
                 />
-                <button
-                  type="button"
-                  onClick={() => saveRename(d.id)}
-                  disabled={renaming || !editValue.trim()}
-                  className="shrink-0 rounded-full bg-yes px-4 py-1.5 text-[13px] font-semibold text-ink-950 transition active:scale-95 disabled:opacity-50"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingId(undefined)}
-                  className="shrink-0 rounded-full bg-ink-700 px-3 py-1.5 text-[13px] font-medium text-white/70 transition active:scale-95"
-                >
-                  Cancel
-                </button>
+                <input
+                  type="text"
+                  value={editIpValue}
+                  onChange={(e) => setEditIpValue(e.target.value)}
+                  maxLength={255}
+                  placeholder="TV IP address (for launching Plex), e.g. 192.168.1.42"
+                  className="min-w-0 rounded-lg bg-ink-950 px-3 py-1.5 font-mono text-[13px] text-white ring-1 ring-white/10 focus:outline-none focus:ring-white/30"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(undefined)}
+                    className="shrink-0 rounded-full bg-ink-700 px-3 py-1.5 text-[13px] font-medium text-white/70 transition active:scale-95"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => saveRename(d.id)}
+                    disabled={renaming || !editValue.trim()}
+                    className="shrink-0 rounded-full bg-yes px-4 py-1.5 text-[13px] font-semibold text-ink-950 transition active:scale-95 disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
             ) : (
               <div key={d.id} className="flex items-center justify-between rounded-xl bg-ink-800 px-4 py-3">
@@ -171,7 +184,9 @@ export default function Devices({ onClose }: Props) {
                   className="min-w-0 flex-1 text-left"
                 >
                   <p className="truncate text-sm font-medium">{d.name}</p>
-                  {d.plexProduct && <p className="font-mono text-[10px] tracking-[.1em] text-white/40">{d.plexProduct}</p>}
+                  <p className="font-mono text-[10px] tracking-[.1em] text-white/40">
+                    {[d.plexProduct, d.ipAddress ?? "no IP — can't auto-launch"].filter(Boolean).join(" · ")}
+                  </p>
                 </button>
                 <button
                   type="button"

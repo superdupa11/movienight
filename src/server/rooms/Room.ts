@@ -21,15 +21,21 @@ import { getCategoryOptions, getQualifyingMovieIds } from "../deck/filters.js";
 import { prewarmDeck } from "../deck/prewarm.js";
 import { seededShuffle } from "../deck/shuffle.js";
 import { config } from "../config.js";
-import { listDevices } from "../db/devices.js";
-import { castToActiveDevice, castToTv, listActiveDevices } from "../plex/playback.js";
+import { listDevices, type TvDevice } from "../db/devices.js";
+import { castToActiveDevice, castToTv, listActiveDevices, type CastStatus } from "../plex/playback.js";
 import { plexWebUrl } from "../plex/webLink.js";
+import { armSleepTimer, cancelSleepTimer as cancelDeviceSleepTimer } from "../tv/sleepTimer.js";
 import type { AppServer } from "./ioTypes.js";
 import { err, ok, type Result } from "./result.js";
 import { Throttler } from "./throttle.js";
 import type { PlayerInternal, RunoffCandidate } from "./types.js";
 
 type WarmSnapshot = { warm: WarmState; warmProgress: { done: number; total: number }; deckHash: string; qualifyingCount: number; deckSize: number };
+
+// `active: true` = already open on the network, cast directly; `active:
+// false` = not open, but has a saved IP so `castToCandidate` can launch it
+// first. See `Room.castCandidates`.
+type CastCandidate = TvDevice & { active: boolean };
 
 export class Room {
   readonly code: string;
@@ -49,6 +55,9 @@ export class Room {
   runoffCandidates: RunoffCandidate[] = [];
   runoffPicks = new Map<string, string>(); // userId -> movieId
   result?: RoomStateDTO["result"];
+  // Device id this room most recently cast to — lets `cancelSleepTimer` find
+  // the right timer without the client having to track/send a device id.
+  private castingDeviceId?: string;
   createdAt = Date.now();
   lastActivityAt = Date.now();
 
@@ -611,11 +620,12 @@ export class Room {
    * comes back via broadcast `plex:castStatus` (see docs/PROTOCOL.md §7).
    *
    * Which physical device gets targeted is resolved asynchronously in
-   * `resolveCast`: exactly one saved device currently active casts directly,
-   * more than one broadcasts `plex:pickDevice` for the host to disambiguate
-   * (see `selectDevice`), and none active falls back to the Samsung
-   * auto-launch path (still assumes `listDevices(db)[0]` is that TV — see
-   * docs/PROTOCOL.md §7.1). */
+   * `resolveCast` from the union of every saved device that's either
+   * currently open (`castCandidates`'s `active: true`, cast straight
+   * through) or has a saved IP (`active: false`, launch first) — see
+   * `castToCandidate` and docs/PROTOCOL.md §7.1. Exactly one candidate casts
+   * immediately; more than one broadcasts `plex:pickDevice` for the host to
+   * disambiguate (see `selectDevice`). */
   openOnTv(actorId: string): Result {
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
     if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
@@ -626,56 +636,103 @@ export class Room {
     return ok();
   }
 
+  /** Every saved device reachable right now: open on the network (`active`,
+   * cast directly) or carrying a saved IP (launchable from cold). A saved
+   * device with neither isn't a candidate — nothing we can do with it. */
+  private async castCandidates(): Promise<CastCandidate[]> {
+    const saved = listDevices(this.db);
+    const active = await listActiveDevices(this.db);
+    const activeIds = new Set(active.map((d) => d.id));
+    return [
+      ...active.map((d) => ({ ...d, active: true as const })),
+      ...saved.filter((d) => !activeIds.has(d.id) && d.ipAddress).map((d) => ({ ...d, active: false as const })),
+    ];
+  }
+
   private async resolveCast(ratingKey: string) {
-    // Immediate feedback before the `listActiveDevices` round-trip to Plex —
+    // Immediate feedback before the `castCandidates` round-trip to Plex —
     // without this the cast button sits on "Open on TV" with no visible
     // change until that lookup resolves. Every branch below either overwrites
     // this quickly (PLAYING/ERROR/pickDevice) or reinforces it (castToTv's
     // own LAUNCHING, idempotent).
     this.io.to(this.code).emit("plex:castStatus", { state: "LAUNCHING" });
 
-    const active = await listActiveDevices(this.db);
-    const [only, ...rest] = active;
+    const candidates = await this.castCandidates();
+    const [only, ...rest] = candidates;
     if (only && rest.length === 0) {
-      await this.runActiveCast(only.plexMachineIdentifier, ratingKey);
-    } else if (active.length > 1) {
-      this.io.to(this.code).emit("plex:pickDevice", { devices: active });
-    } else if (config.tv.samsungHost) {
-      const device = listDevices(this.db)[0];
-      if (!device) return;
-      await this.runCast(device.plexMachineIdentifier, ratingKey);
+      await this.castToCandidate(only, ratingKey);
+    } else if (candidates.length > 1) {
+      this.io.to(this.code).emit("plex:pickDevice", { devices: candidates });
     } else {
       this.io.to(this.code).emit("plex:castStatus", {
         state: "ERROR",
-        message: "No TV is open — start Plex on a saved device first.",
+        message: "No TV is open, and no saved device has an IP to launch Plex on — add one via Manage Devices.",
       });
     }
   }
 
   /** Host only, RESOLVED only. Follow-up to a `plex:pickDevice` broadcast —
-   * casts to whichever saved device the host chose. `deviceId` is validated
-   * against `tv_device`, never trusted blindly (invariant #2). */
+   * casts to whichever saved device the host chose. `deviceId` is
+   * re-resolved against live `castCandidates` server-side, never trusted
+   * blindly (invariant #2) — what's active/launchable can also have changed
+   * since the broadcast went out. */
   selectDevice(actorId: string, deviceId: string): Result {
     if (actorId !== this.hostId) return err("ERR_NOT_HOST");
     if (this.phase !== "RESOLVED") return err("ERR_INVALID_PHASE");
     if (!this.result) return err("ERR_BAD_REQUEST", "Nothing to cast");
-    const device = listDevices(this.db).find((d) => d.id === deviceId);
-    if (!device) return err("ERR_BAD_REQUEST", "Unknown device");
+    if (!listDevices(this.db).some((d) => d.id === deviceId)) return err("ERR_BAD_REQUEST", "Unknown device");
 
-    void this.runActiveCast(device.plexMachineIdentifier, this.result.movie.id);
+    void this.resolveSelectedCast(deviceId, this.result.movie.id);
     return ok();
   }
 
-  private async runCast(plexMachineIdentifier: string, ratingKey: string) {
-    await castToTv(plexMachineIdentifier, ratingKey, (status) => {
-      this.io.to(this.code).emit("plex:castStatus", status);
+  private async resolveSelectedCast(deviceId: string, ratingKey: string) {
+    const device = (await this.castCandidates()).find((d) => d.id === deviceId);
+    if (!device) {
+      this.io.to(this.code).emit("plex:castStatus", { state: "ERROR", message: "That TV is no longer reachable." });
+      return;
+    }
+    await this.castToCandidate(device, ratingKey);
+  }
+
+  private async castToCandidate(device: CastCandidate, ratingKey: string) {
+    if (device.active) {
+      await this.runActiveCast(device, ratingKey);
+    } else if (device.ipAddress) {
+      await this.runCast({ ...device, ipAddress: device.ipAddress }, ratingKey);
+    }
+  }
+
+  private async runCast(device: CastCandidate & { ipAddress: string }, ratingKey: string) {
+    await castToTv(device.plexMachineIdentifier, device.ipAddress, ratingKey, (status) => this.handleCastStatus(device, status));
+  }
+
+  private async runActiveCast(device: CastCandidate, ratingKey: string) {
+    await castToActiveDevice(device.plexMachineIdentifier, ratingKey, (status) => this.handleCastStatus(device, status));
+  }
+
+  /** Broadcasts cast progress and, on PLAYING, arms the sleep timer (§7.2) —
+   * only possible if `device` has a saved IP, since that's what the sleep
+   * timer needs to send `KEY_POWER` later. A device cast to via the "already
+   * active" path with no IP on file just doesn't get one; nothing to do
+   * about that beyond what Manage Devices already tells the host. */
+  private handleCastStatus(device: CastCandidate, status: CastStatus) {
+    this.io.to(this.code).emit("plex:castStatus", status);
+    if (status.state !== "PLAYING" || !device.ipAddress) return;
+    this.castingDeviceId = device.id;
+    armSleepTimer(this.db, { id: device.id, plexMachineIdentifier: device.plexMachineIdentifier, ipAddress: device.ipAddress }, (sleepStatus) => {
+      this.io.to(this.code).emit("plex:sleepTimer", sleepStatus);
     });
   }
 
-  private async runActiveCast(plexMachineIdentifier: string, ratingKey: string) {
-    await castToActiveDevice(plexMachineIdentifier, ratingKey, (status) => {
-      this.io.to(this.code).emit("plex:castStatus", status);
-    });
+  /** Host only. Cancels the sleep timer armed for whichever device this room
+   * last cast to (e.g. people are still around after the movie and don't
+   * want the TV to auto power off). */
+  cancelSleepTimer(actorId: string): Result {
+    if (actorId !== this.hostId) return err("ERR_NOT_HOST");
+    if (!this.castingDeviceId) return err("ERR_BAD_REQUEST", "No sleep timer running");
+    cancelDeviceSleepTimer(this.castingDeviceId);
+    return ok();
   }
 
   // ---- reset -------------------------------------------------------

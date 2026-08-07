@@ -27,8 +27,14 @@ const CAST_LABEL = {
   ERROR: "Open on TV",
 } as const;
 
+const SLEEP_LABEL = {
+  ARMED: "Sleep timer on — TV turns off after the movie",
+  FIRED: "TV turned off",
+  CANCELLED: "Sleep timer cancelled",
+} as const;
+
 export default function Reveal() {
-  const { state, resetSession, leaveRoom, openOnTv, selectDevice } = useRoom();
+  const { state, resetSession, leaveRoom, openOnTv, selectDevice, cancelSleepTimer } = useRoom();
   const result = state.result;
   const isHost = state.you?.id === state.hostId;
   const castStatus = state.castStatus;
@@ -36,6 +42,7 @@ export default function Reveal() {
   const showCastButton = isHost && state.tvCastEnabled;
   const pickDevices = state.pickDevices;
   const picking = showCastButton && !!pickDevices && pickDevices.length > 0;
+  const sleepTimer = state.sleepTimer;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(() => ({
@@ -228,6 +235,24 @@ export default function Reveal() {
         </div>
         {showCastButton && !picking && castStatus?.state === "ERROR" && (
           <p className="mt-2.5 text-center text-[12px] text-no">{castStatus.message ?? "Couldn't open Plex on the TV."}</p>
+        )}
+        {showCastButton && !picking && sleepTimer?.state === "ERROR" && (
+          <p className="mt-2.5 text-center text-[12px] text-no">{sleepTimer.message ?? "Sleep timer couldn't reach the TV."}</p>
+        )}
+        {showCastButton && !picking && sleepTimer?.state === "ARMED" && (
+          <p className="mt-2.5 text-center text-[12px] text-white/40">
+            {SLEEP_LABEL.ARMED} ·{" "}
+            <button
+              type="button"
+              onClick={cancelSleepTimer}
+              className="underline decoration-white/20 underline-offset-2"
+            >
+              Cancel
+            </button>
+          </p>
+        )}
+        {showCastButton && !picking && (sleepTimer?.state === "FIRED" || sleepTimer?.state === "CANCELLED") && (
+          <p className="mt-2.5 text-center text-[12px] text-white/40">{SLEEP_LABEL[sleepTimer.state]}</p>
         )}
         {showCastButton && !picking && (
           <a

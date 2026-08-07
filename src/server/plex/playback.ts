@@ -62,6 +62,21 @@ export async function listPlayers(): Promise<PlexDevice[]> {
   }));
 }
 
+type SessionEntry = { Player?: { machineIdentifier?: string; state?: string } };
+
+/**
+ * Whether PMS currently has a live playback session on `plexMachineIdentifier`
+ * — playing, paused, or buffering all count, since any of those means someone
+ * is still mid-movie. Only "no session at all" (finished, stopped, or the
+ * client closed) counts as not active. Backs the sleep timer (§7.2): polling
+ * this is a much more reliable "is the movie still going" signal than a
+ * wall-clock timer against the runtime, since it's unaffected by pausing.
+ */
+export async function isSessionActive(plexMachineIdentifier: string): Promise<boolean> {
+  const data = await plexFetchJson<{ MediaContainer: { Metadata?: SessionEntry[] } }>(plexUrl("/status/sessions"));
+  return (data.MediaContainer.Metadata ?? []).some((m) => m.Player?.machineIdentifier === plexMachineIdentifier);
+}
+
 /**
  * Cues a title on a Plex client, proxied through PMS.
  *
@@ -111,7 +126,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Launches Plex on the configured TV, waits for `plexMachineIdentifier`
+ * Launches Plex on the TV at `ipAddress`, waits for `plexMachineIdentifier`
  * specifically to register as a controllable client, then cues `ratingKey`.
  * Reports progress via `onStatus` so the caller can broadcast it (Room emits
  * `plex:castStatus`).
@@ -129,12 +144,13 @@ function sleep(ms: number): Promise<void> {
  */
 export async function castToTv(
   plexMachineIdentifier: string,
+  ipAddress: string,
   ratingKey: string,
   onStatus: (status: CastStatus) => void,
 ): Promise<void> {
   onStatus({ state: "LAUNCHING" });
   try {
-    await launchPlexApp();
+    await launchPlexApp(ipAddress);
   } catch (e) {
     onStatus({ state: "ERROR", message: e instanceof Error ? e.message : String(e) });
     return;

@@ -19,11 +19,6 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
-  // "Open on Plex" — single hardcoded TV for now (see docs/PROTOCOL.md §7).
-  // Blank = feature disabled; Room.openOnTv() rejects with ERR_BAD_REQUEST.
-  tv: {
-    samsungHost: process.env.SAMSUNG_TV_HOST || "",
-  },
   port: Number(optional("PORT", "8080")),
   publicUrl: optional("PUBLIC_URL", "http://localhost:8080").replace(/\/+$/, ""),
   dbPath: optional("DB_PATH", "./data/movienight.db"),

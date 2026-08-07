@@ -58,6 +58,11 @@ type State = {
   // one via `selectDevice`. Cleared alongside castStatus (a real cast status
   // means the ambiguity is resolved, one way or another).
   pickDevices?: TvDevice[];
+  // Sleep timer (docs/PROTOCOL.md §7.2) — armed once a cast reaches PLAYING.
+  // Cleared alongside castStatus/pickDevices on a new round; the server-side
+  // timer for the *previous* device may still be running regardless (it
+  // watches Plex, not this room), this only tracks what to show.
+  sleepTimer?: { state: "ARMED" | "FIRED" | "CANCELLED" | "ERROR"; message?: string };
 };
 
 const initialState: State = {
@@ -100,6 +105,7 @@ type Action =
   | { type: "RESOLVED_EMPTY"; message: string }
   | { type: "CAST_STATUS"; state: "LAUNCHING" | "WAITING_FOR_SIGNIN" | "PLAYING" | "ERROR"; message?: string }
   | { type: "PICK_DEVICES"; devices: TvDevice[] }
+  | { type: "SLEEP_TIMER"; state: "ARMED" | "FIRED" | "CANCELLED" | "ERROR"; message?: string }
   | { type: "ERROR"; code: ErrorCode; message: string }
   | { type: "RESET_LOCAL" };
 
@@ -175,6 +181,7 @@ function reducer(state: State, action: Action): State {
         result: undefined,
         castStatus: undefined,
         pickDevices: undefined,
+        sleepTimer: undefined,
       };
     case "PROGRESS":
       return { ...state, progress: { ...state.progress, [action.id]: { cursor: action.cursor, total: action.total } } };
@@ -185,6 +192,7 @@ function reducer(state: State, action: Action): State {
         result: { movie: action.movie, via: "match", note: action.note, idx: action.idx, plexUrl: action.plexUrl },
         castStatus: undefined,
         pickDevices: undefined,
+        sleepTimer: undefined,
       };
     case "RUNOFF_START":
       return { ...state, phase: "RUNOFF", runoffCandidates: action.candidates, runoffTally: { picksIn: 0, total: state.players.length } };
@@ -197,6 +205,7 @@ function reducer(state: State, action: Action): State {
         result: { movie: action.movie, via: "runoff", votes: action.votes, plexUrl: action.plexUrl },
         castStatus: undefined,
         pickDevices: undefined,
+        sleepTimer: undefined,
       };
     case "RESOLVED_EMPTY":
       return { ...state, phase: "RESOLVED", result: undefined, emptyMessage: action.message };
@@ -204,6 +213,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, castStatus: { state: action.state, message: action.message }, pickDevices: undefined };
     case "PICK_DEVICES":
       return { ...state, pickDevices: action.devices, castStatus: undefined };
+    case "SLEEP_TIMER":
+      return { ...state, sleepTimer: { state: action.state, message: action.message } };
     case "ERROR":
       return { ...state, lastError: { code: action.code, message: action.message, at: Date.now() } };
     case "RESET_LOCAL":
@@ -234,6 +245,7 @@ type RoomApi = {
   resetSession: () => void;
   openOnTv: () => void;
   selectDevice: (deviceId: string) => void;
+  cancelSleepTimer: () => void;
 };
 
 const RoomCtx = createContext<RoomApi | undefined>(undefined);
@@ -266,6 +278,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
     socket.on("session:resolved:empty", (p) => dispatch({ type: "RESOLVED_EMPTY", message: p.message }));
     socket.on("plex:castStatus", (p) => dispatch({ type: "CAST_STATUS", ...p }));
     socket.on("plex:pickDevice", (p) => dispatch({ type: "PICK_DEVICES", devices: p.devices }));
+    socket.on("plex:sleepTimer", (p) => dispatch({ type: "SLEEP_TIMER", ...p }));
     socket.on("error", (p) => dispatch({ type: "ERROR", ...p }));
 
     const stored = loadSession();
@@ -354,6 +367,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const resetSession = useCallback(() => socket.emit("session:reset", {}), []);
   const openOnTv = useCallback(() => socket.emit("plex:openOnTv", {}), []);
   const selectDevice = useCallback((deviceId: string) => socket.emit("plex:selectDevice", { deviceId }), []);
+  const cancelSleepTimer = useCallback(() => socket.emit("plex:cancelSleepTimer", {}), []);
 
   const api = useMemo<RoomApi>(
     () => ({
@@ -377,6 +391,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       resetSession,
       openOnTv,
       selectDevice,
+      cancelSleepTimer,
     }),
     [
       state,
@@ -399,6 +414,7 @@ export function RoomProvider({ children }: { children: ReactNode }) {
       resetSession,
       openOnTv,
       selectDevice,
+      cancelSleepTimer,
     ],
   );
 

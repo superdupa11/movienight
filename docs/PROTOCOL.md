@@ -458,11 +458,13 @@ per-screen player list, since RESOLVED/MATCHED screens don't render one.
 
 Host-only action from the reveal screen (`RESOLVED`): cue the
 matched/runoff-winning title on a saved Plex client (`tv_device`, managed via
-"Manage Devices"). If exactly one saved device is currently open on the
-network, cast straight to it. If none are open, fall back to launching Plex
-on the configured Samsung TV (`SAMSUNG_TV_HOST` env var) and waiting for it
-to register — see §7.1. The existing `plexUrl` deep link (§6) stays as the
-default/fallback affordance; this is additive.
+"Manage Devices"). A saved device can carry a LAN IP (entered by hand — Plex
+never reveals one, see the `playOnDevice` gotcha below); if it's currently
+open on the network, cast straight to it, and if not but it has a saved IP,
+launch Plex on it first and wait for it to register — see §7.1. Any number of
+TVs can be saved this way; there's no longer a single configured TV. The
+existing `plexUrl` deep link (§6) stays as the default/fallback affordance;
+this is additive.
 
 Everything below was verified against a real Samsung TV + PMS, not assumed —
 the exact requests differ from what the general shape of "Plex remote control"
@@ -484,6 +486,18 @@ suggests, in ways that would have been wrong to just guess (see the two
    login (plex.tv/link), which is not auto-solved (see callout below). Give up
    after 120s total with `plex:castStatus: ERROR`.
 3. **Cue the title**, once a client appears — see `playOnDevice` below.
+
+**`launchPlexApp` opens a fresh connection per call, never pooled.** An
+earlier version reused a single module-level `undici.Agent` for every launch.
+That worked the first time and then failed on the next cast — plausibly
+because the TV closes its side of the idle keep-alive socket between casts
+(routinely hours or days apart for movie night), and undici's pool doesn't
+find out until it tries to reuse that socket, so the request dies instead of
+opening a new one. The fix (a short-lived, single-request `Agent` per call,
+closed immediately after) follows from the code, but — unlike the two
+`playOnDevice` gotchas below — hasn't yet been re-confirmed against a real
+TV going idle for a full multi-day gap between movie nights. Worth watching
+for recurrence before trusting this as settled.
 
 ### `playOnDevice`: two non-obvious requirements
 
@@ -539,29 +553,35 @@ IP and once via `127.0.0.1`), seemingly both — ended up playing.
 The fix: every cast targets a specific `plexMachineIdentifier`, matched
 exactly (`d.id === plexMachineIdentifier && d.canPlay`), never "first match."
 Candidates come from the `tv_device` table (Manage Devices) — but which one
-gets used depends on how many saved devices are actually live right now.
-`Room.openOnTv` resolves this in three steps:
+gets used, and whether it needs launching first, depends on how many saved
+devices are reachable right now. `Room.castCandidates` (called from
+`openOnTv` and `selectDevice`) resolves this:
 
 1. **Cross-reference.** `listActiveDevices(db)` calls `listPlayers()` and
    intersects it with saved `tv_device` rows by `plexMachineIdentifier` — a
    saved device only counts as "active" if it currently shows up in
    `/clients` with `playback` capability, not merely because it was saved
-   once.
-2. **Exactly one active** → cast directly via `castToActiveDevice` (just
-   `playOnDevice`, no launch/poll — the client's already open).
-3. **More than one active** → broadcast `plex:pickDevice` with the active
-   devices; the host resolves it with `plex:selectDevice { deviceId }`,
-   re-validated server-side against `tv_device` before casting (never a
-   blindly-trusted client value — invariant #2).
-4. **None active** → fall back to the original launch-and-wait flow
-   (`castToTv`): launch Plex on `SAMSUNG_TV_HOST`, poll for it to register,
-   then play. This still assumes `listDevices(db)[0]` is that physical TV —
-   the launch mechanism only knows how to open Plex on the one configured
-   Samsung TV, so whoever sets `SAMSUNG_TV_HOST` is expected to also have
-   saved that same TV as their first device. A mismatch here means "the app
-   launches, casting never finds a match" rather than a wrong-TV mistake —
-   same caveat as before, just narrowed to the zero-active case instead of
-   applying to every cast.
+   once. Every active device is a candidate (`active: true`).
+2. **Launchable.** Any saved device that *isn't* active but has a saved
+   `ipAddress` is also a candidate (`active: false`) — it can be reached cold
+   via `launchPlexApp(ipAddress)`. A saved device with neither — not open and
+   no IP on file — isn't a candidate at all.
+3. **Exactly one candidate** → cast to it: `castToActiveDevice` (just
+   `playOnDevice`, no launch/poll) if active, or the launch-and-wait flow
+   (`castToTv`) if not.
+4. **More than one candidate** → broadcast `plex:pickDevice` with all of
+   them; the host resolves it with `plex:selectDevice { deviceId }`, which
+   re-runs `castCandidates` server-side rather than trusting the client's
+   `deviceId` blindly (invariant #2) — what's active/launchable can have
+   changed in the time it took the host to tap.
+5. **No candidates** → `plex:castStatus: ERROR` telling the host to open
+   Plex on a saved device, or add an IP to one, via Manage Devices.
+
+Each saved device's IP has to be entered by hand in Manage Devices — Plex's
+`/clients` never gives us a usable one (see the `playOnDevice` gotcha above:
+"Plex for Samsung" reports its own address as `127.0.0.1`). There's no
+`SAMSUNG_TV_HOST` env var anymore; any number of TVs can be saved this way,
+each independently launchable.
 
 ### The PIN sign-in gap is deliberate, not a TODO
 
@@ -588,9 +608,11 @@ enabling it is the actual operational fix, since it addresses the cause
 | Event | Direction | Payload | Valid in | Notes |
 |---|---|---|---|---|
 | `plex:openOnTv` | client → server | `{}` | `RESOLVED` | Host only. Server casts `result.movie` — never a client-supplied id (invariant #2) — and resolves the target device itself (§7.1) |
-| `plex:pickDevice` | server → client | `{ devices: TvDevice[] }` | — | Broadcast when more than one saved device is active at once; only the host acts on it |
-| `plex:selectDevice` | client → server | `{ deviceId: string }` | `RESOLVED` | Host only, follow-up to `plex:pickDevice`. `deviceId` re-validated against `tv_device` server-side |
+| `plex:pickDevice` | server → client | `{ devices: TvDevice[] }` | — | Broadcast when more than one saved device is a cast candidate (active or launchable, §7.1); only the host acts on it |
+| `plex:selectDevice` | client → server | `{ deviceId: string }` | `RESOLVED` | Host only, follow-up to `plex:pickDevice`. `deviceId` re-resolved against live `castCandidates` server-side |
 | `plex:castStatus` | server → client | `{ state: 'LAUNCHING' \| 'WAITING_FOR_SIGNIN' \| 'PLAYING' \| 'ERROR', message?: string }` | — | Broadcast to the room, not just the host — matches `match:found`'s shared-ceremony framing |
+| `plex:sleepTimer` | server → client | `{ state: 'ARMED' \| 'FIRED' \| 'CANCELLED' \| 'ERROR', message?: string }` | — | §7.2. Broadcast; ARMED once a cast reaches PLAYING on a device with a saved IP |
+| `plex:cancelSleepTimer` | client → server | `{}` | — | §7.2. Host only. Cancels the timer for whichever device the room last cast to |
 
 ### What was deliberately left out (YAGNI, not forgotten)
 
@@ -602,12 +624,59 @@ enabling it is the actual operational fix, since it addresses the cause
   IR blaster (Broadlink RM4 mini or similar) replaying the TV remote's
   power-on code — not yet implemented. `castToTv` assumes the TV is already
   on.
-- **Multi-vendor launch.** The zero-active fallback only knows how to launch
-  Plex on one configured Samsung TV (`SAMSUNG_TV_HOST`) — it has no concept
-  of a per-device launch mechanism for other vendors/apps. If a saved device
-  isn't a Samsung TV (or isn't the configured one), "none active" just means
-  the host has to open Plex on it manually before casting works. Teaching
-  every device row how to launch itself is real future work, not implemented.
+- **Multi-vendor launch.** `launchPlexApp` only knows how to launch Plex on a
+  Samsung TV via its local REST API — a saved device's `ipAddress` is assumed
+  to point at one. Every TV can now be launched independently (§7.1), which
+  covers this deployment (Samsung-only), but there's still no per-vendor
+  launch mechanism. If a saved device isn't a Samsung TV, leaving its IP
+  blank is correct — it just can't be auto-launched, only cast to once
+  already open.
+
+### 7.2 Sleep Timer
+
+Once a cast reaches `PLAYING` on a device with a saved IP, the server arms a
+sleep timer (`src/server/tv/sleepTimer.ts`) that turns the TV off once the
+movie is actually done — not a fixed number of minutes after cast, a wall
+clock timer that would either fire early (paused for a bathroom break) or
+never account for someone rewinding a scene. Instead it polls PMS
+`GET /status/sessions` every minute for a live session on that device's
+`plexMachineIdentifier` (`isSessionActive` in `playback.ts`) — playing,
+paused, or buffering all count as "still watching," only the session
+disappearing entirely counts as done. After 3 consecutive misses (~3 min, to
+ride out a momentary blip rather than misreading one) it sends `KEY_POWER` to
+the TV and stops. A hard 6h ceiling backstops the poll loop regardless, same
+motivation as the launch-connection fix above: nothing here should be able
+to run silently for days if a check gets stuck. `plex:sleepTimer` broadcasts
+`ARMED` / `FIRED` / `CANCELLED` / `ERROR` to the room; the host can cancel
+early with `plex:cancelSleepTimer` (e.g. people are still hanging out after
+the movie) — the room remembers the last device it cast to specifically so
+this event needs no payload. Arming again (a fresh cast to the same device)
+supersedes whatever was running before; only one timer runs per device at a
+time (`sleepTimer.ts`'s `activeByDevice`).
+
+**A different Samsung surface than §7's launch call — unverified.** Sending
+`KEY_POWER` goes over the TV's WebSocket remote-control channel
+(`wss://{ip}:8002/api/v2/channels/samsung.remote.control`,
+`src/server/tv/samsungRemote.ts`), not the REST endpoint `launchPlexApp`
+uses. The first connection from a new client pops an on-screen "Allow this
+device?" prompt on the TV; nothing proceeds until a human accepts it, after
+which the TV returns a token (stored as `tv_device.remote_token`, deliberately
+excluded from the `TvDevice` shape sent to clients — see `getRemoteToken`/
+`setRemoteToken` in `db/devices.ts`) that skips the prompt on later
+connections. Unlike everything else in §7, none of this — the channel, the
+pairing flow, whether `KEY_POWER` actually powers the TV off versus something
+else — has been confirmed against a real TV yet. Treat it as a documented,
+plausible design pending that check, the same standard this doc holds
+everything else to.
+
+Considered and passed over: cycling the TV's own native sleep-timer OSD via
+the legacy `KEY_SLEEP` remote code instead of `KEY_POWER` after polling.
+`KEY_SLEEP` is a real, documented Tizen key, but community reports on whether
+current firmware actually honors it are inconsistent — a real risk of
+repeating the exact `ed.apps.launch` mistake (§7's opening paragraph:
+documented, but a silent no-op on this TV's firmware). Driving the TV
+directly off Plex's own session state avoids depending on that TV-side
+feature working at all.
 
 ---
 

@@ -2,8 +2,17 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ScannedPlexClient, TvDevice } from "../../shared/types.js";
-import { addDevice, listDevices, removeDevice, renameDevice } from "../db/devices.js";
+import { addDevice, listDevices, removeDevice, updateDevice } from "../db/devices.js";
 import { listPlayers } from "../plex/playback.js";
+
+// Loose on purpose: accepts a plain IP or a LAN hostname (mDNS names like
+// `tv.local` work fine for Samsung's local REST API too), just not garbage.
+const ipAddressSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .regex(/^[a-zA-Z0-9.-]+$/, "Not a valid IP or hostname");
 
 const addDeviceSchema = z.object({
   name: z.string().trim().min(1).max(60),
@@ -11,9 +20,12 @@ const addDeviceSchema = z.object({
   plexProduct: z.string().nullable(),
 });
 
-const renameDeviceSchema = z.object({
-  name: z.string().trim().min(1).max(60),
-});
+const updateDeviceSchema = z
+  .object({
+    name: z.string().trim().min(1).max(60).optional(),
+    ipAddress: z.union([ipAddressSchema, z.literal("")]).nullable().optional(),
+  })
+  .refine((v) => v.name !== undefined || v.ipAddress !== undefined, "Nothing to update");
 
 /**
  * Device management for "Open on Plex" (PROTOCOL §7). Scanning surfaces
@@ -40,9 +52,13 @@ export function registerDeviceRoutes(app: FastifyInstance, db: Database.Database
 
   app.patch("/api/devices/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const parsed = renameDeviceSchema.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Malformed name" });
-    const device = renameDevice(db, id, parsed.data.name);
+    const parsed = updateDeviceSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Malformed update" });
+    const { name, ipAddress } = parsed.data;
+    const device = updateDevice(db, id, {
+      name,
+      ipAddress: ipAddress === undefined ? undefined : ipAddress || null,
+    });
     if (!device) return reply.code(404).send({ error: "Not found" });
     return device;
   });
